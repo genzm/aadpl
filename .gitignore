@@ -4,4 +4,11 @@ _build/
 _opam/
 *.byte
 *.native
+*.cmi
+*.cmx
+*.cmo
+*.cma
+*.cmxa
+*.o
+*.a
 .DS_Store

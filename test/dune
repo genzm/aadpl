@@ -3,6 +3,11 @@
  (modules test_view gen_view)
  (libraries view alcotest qcheck qcheck-alcotest))
 
+(test
+ (name test_kernel)
+ (modules test_kernel gen_view)
+ (libraries kernel view alcotest qcheck qcheck-alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)
