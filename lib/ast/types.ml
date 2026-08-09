@@ -23,11 +23,13 @@ type expr =
   | Var   of loc * string
   | Prim  of loc * prim * expr list
   | Let   of loc * string * expr * expr
+  | Rank  of loc * int * prim * expr list
 
 and value = View.Tensor.t   (* future: variant with dtype *)
 
 let loc_of = function
-  | Const (l, _) | Var (l, _) | Prim (l, _, _) | Let (l, _, _, _) -> l
+  | Const (l, _) | Var (l, _) | Prim (l, _, _) | Let (l, _, _, _)
+  | Rank (l, _, _, _) -> l
 
 (* --- constructors with dummy_loc for tests --- *)
 
@@ -35,6 +37,7 @@ let const v       = Const (dummy_loc, v)
 let var s         = Var (dummy_loc, s)
 let prim p args   = Prim (dummy_loc, p, args)
 let let_ s e body = Let (dummy_loc, s, e, body)
+let rank k p args  = Rank (dummy_loc, k, p, args)
 
 (* --- pretty-printer --- *)
 
@@ -84,3 +87,6 @@ let rec pp fmt = function
       (Format.pp_print_list ~pp_sep:Format.pp_print_space pp) args
   | Let (_, s, e, body) ->
     Format.fprintf fmt "(let %s = %a in@;<1 2>%a)" s pp e pp body
+  | Rank (_, k, p, args) ->
+    Format.fprintf fmt "(%a⎉%d %a)" pp_prim p k
+      (Format.pp_print_list ~pp_sep:Format.pp_print_space pp) args

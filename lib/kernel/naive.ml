@@ -99,29 +99,55 @@ let scatter_add ~src ~view ~axis ~indices ~acc =
     let pos = Ndview.index_of view full_idx in
     Buf.set acc pos (Buf.get acc pos +. Buf.get src si))
 
-let matmul ~a ~view_a ~b ~view_b ~dst =
+let matmul ~a ~view_a ~b ~view_b ~dst ~nframe =
   assert (not dst.Buf.shared);
-  assert (Ndview.rank view_a = 2);
-  assert (Ndview.rank view_b = 2);
-  let m = view_a.Ndview.shape.(0) in
-  let ka = view_a.Ndview.shape.(1) in
-  let kb = view_b.Ndview.shape.(0) in
-  let n = view_b.Ndview.shape.(1) in
-  assert (ka = kb);
+  let ra = Ndview.rank view_a in
+  let rb = Ndview.rank view_b in
+  assert (ra = nframe + 2);
+  assert (rb = nframe + 2);
+  let sa = view_a.Ndview.shape in
+  let sb = view_b.Ndview.shape in
+  let m = sa.(nframe) in
+  let ka = sa.(nframe + 1) in
+  let n = sb.(nframe + 1) in
+  assert (ka = sb.(nframe));
   assert (Buf.length a >= Ndview.base_size view_a);
   assert (Buf.length b >= Ndview.base_size view_b);
-  assert (Buf.length dst >= m * n);
-  let idx_a = [|0; 0|] in
-  let idx_b = [|0; 0|] in
-  for i = 0 to m - 1 do
-    for j = 0 to n - 1 do
-      let s = ref 0.0 in
-      for k = 0 to ka - 1 do
-        idx_a.(0) <- i; idx_a.(1) <- k;
-        idx_b.(0) <- k; idx_b.(1) <- j;
-        s := !s +. (Buf.get a (Ndview.index_of view_a idx_a)
-                  *. Buf.get b (Ndview.index_of view_b idx_b))
-      done;
-      Buf.set dst (i * n + j) !s
+  let frame_shape = Array.sub sa 0 nframe in
+  let out_shape = Array.append frame_shape [| m; n |] in
+  let out_numel = Array.fold_left ( * ) 1 out_shape in
+  assert (Buf.length dst >= out_numel);
+  let out_view = Ndview.contiguous out_shape in
+  let idx_a = Array.make ra 0 in
+  let idx_b = Array.make rb 0 in
+  let idx_out = Array.make (nframe + 2) 0 in
+  let frame_numel = Array.fold_left ( * ) 1 frame_shape in
+  let frame_idx = Array.make nframe 0 in
+  for _fi = 0 to frame_numel - 1 do
+    Array.blit frame_idx 0 idx_a 0 nframe;
+    Array.blit frame_idx 0 idx_b 0 nframe;
+    Array.blit frame_idx 0 idx_out 0 nframe;
+    for i = 0 to m - 1 do
+      for j = 0 to n - 1 do
+        let s = ref 0.0 in
+        idx_a.(nframe) <- i;
+        idx_b.(nframe + 1) <- j;
+        idx_out.(nframe) <- i;
+        idx_out.(nframe + 1) <- j;
+        for k = 0 to ka - 1 do
+          idx_a.(nframe + 1) <- k;
+          idx_b.(nframe) <- k;
+          s := !s +. (Buf.get a (Ndview.index_of view_a idx_a)
+                    *. Buf.get b (Ndview.index_of view_b idx_b))
+        done;
+        Buf.set dst (Ndview.index_of out_view idx_out) !s
+      done
+    done;
+    (* advance frame index *)
+    let k = ref (nframe - 1) in
+    while !k >= 0 do
+      frame_idx.(!k) <- frame_idx.(!k) + 1;
+      if frame_idx.(!k) < frame_shape.(!k) then k := -1
+      else (frame_idx.(!k) <- 0; decr k)
     done
   done

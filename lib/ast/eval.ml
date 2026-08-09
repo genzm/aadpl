@@ -65,10 +65,20 @@ let validate loc (p : Types.prim) (args : Tensor.t list) =
       assert_shape loc "gather: index out of range"
         (0 <= j && j < s.(axis))) indices
   | Matmul, [a; b] ->
-    assert_shape loc "matmul: a must be rank 2" (rank_of a = 2);
-    assert_shape loc "matmul: b must be rank 2" (rank_of b = 2);
+    assert_shape loc "matmul: a must be rank >= 2" (rank_of a >= 2);
+    assert_shape loc "matmul: b must be rank >= 2" (rank_of b >= 2);
+    assert_shape loc "matmul: a and b must have same rank"
+      (rank_of a = rank_of b);
+    let ra = rank_of a in
+    let nframe = ra - 2 in
+    let sa = shape_of a in
+    let sb = shape_of b in
     assert_shape loc "matmul: inner dim mismatch"
-      ((shape_of a).(1) = (shape_of b).(0))
+      (sa.(nframe + 1) = sb.(nframe));
+    for i = 0 to nframe - 1 do
+      assert_shape loc "matmul: frame shape mismatch"
+        (sa.(i) = sb.(i))
+    done
   | _, _ ->
     raise (Eval_error (loc, "wrong number of arguments"))
 
@@ -105,7 +115,14 @@ let alloc_shape (p : Types.prim) (args : Tensor.t list) : int array =
     Array.init (Array.length s) (fun k ->
       if k = axis then Array.length indices else s.(k))
   | Matmul, [a; b] ->
-    [| (shape_of a).(0); (shape_of b).(1) |]
+    let sa = shape_of a in
+    let sb = shape_of b in
+    let ra = Array.length sa in
+    let nframe = ra - 2 in
+    Array.init (nframe + 2) (fun i ->
+      if i < nframe then sa.(i)
+      else if i = nframe then sa.(nframe)
+      else sb.(Array.length sb - 1))
   (* view ops (Transpose/Broadcast/Slice/Reshape) are handled before
      alloc_shape is called; they never reach here. *)
   | _ -> assert false
@@ -122,6 +139,8 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
   | Let (_, s, e1, e2) ->
     let v1 = eval env e1 in
     eval ((s, v1) :: env) e2
+  | Rank (loc, _, _, _) ->
+    raise (Eval_error (loc, "Rank node must be expanded before eval"))
   | Prim (loc, p, args) ->
     let vs = List.map (eval env) args in
     validate loc p vs;
@@ -170,7 +189,8 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
           Kernel.Naive.gather ~src:x.buf ~view:x.view ~axis ~indices ~dst;
           Tensor.of_buf dst (Ndview.contiguous os)
         | Matmul, [a; b] ->
+          let nframe = rank_of a - 2 in
           Kernel.Naive.matmul ~a:a.buf ~view_a:a.view ~b:b.buf ~view_b:b.view
-            ~dst;
+            ~dst ~nframe;
           Tensor.of_buf dst (Ndview.contiguous os)
         | _ -> raise (Eval_error (loc, "wrong number of arguments"))))

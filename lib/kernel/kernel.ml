@@ -28,7 +28,7 @@ module type S = sig
   val matmul :
     a:View.Buf.t -> view_a:View.Ndview.view ->
     b:View.Buf.t -> view_b:View.Ndview.view ->
-    dst:View.Buf.t -> unit
+    dst:View.Buf.t -> nframe:int -> unit
 end
 
 module Naive = Naive

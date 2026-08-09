@@ -140,11 +140,11 @@ let test_matmul_adjoint_a =
       let vb = Ndview.contiguous [|k; n|] in
       let vg = Ndview.contiguous [|m; n|] in
       let ab = Buf.create (m * n) in
-      Kernel.Naive.matmul ~a ~view_a:va ~b ~view_b:vb ~dst:ab;
+      Kernel.Naive.matmul ~nframe:0 ~a ~view_a:va ~b ~view_b:vb ~dst:ab;
       let lhs = Buf.dot ab g in
       let vb_t = Ndview.transpose vb ~perm:[|1; 0|] in
       let gb_t = Buf.create (m * k) in
-      Kernel.Naive.matmul ~a:g ~view_a:vg ~b ~view_b:vb_t ~dst:gb_t;
+      Kernel.Naive.matmul ~nframe:0 ~a:g ~view_a:vg ~b ~view_b:vb_t ~dst:gb_t;
       let rhs = Buf.dot a gb_t in
       let scale = max 1.0 (max (abs_float lhs) (abs_float rhs)) in
       let tol = 1e-14 *. float_of_int (m * k * n) +. 1e-12 in
@@ -166,11 +166,11 @@ let test_matmul_adjoint_b =
       let vb = Ndview.contiguous [|k; n|] in
       let vg = Ndview.contiguous [|m; n|] in
       let ab = Buf.create (m * n) in
-      Kernel.Naive.matmul ~a ~view_a:va ~b ~view_b:vb ~dst:ab;
+      Kernel.Naive.matmul ~nframe:0 ~a ~view_a:va ~b ~view_b:vb ~dst:ab;
       let lhs = Buf.dot ab g in
       let va_t = Ndview.transpose va ~perm:[|1; 0|] in
       let a_t_g = Buf.create (k * n) in
-      Kernel.Naive.matmul ~a ~view_a:va_t ~b:g ~view_b:vg ~dst:a_t_g;
+      Kernel.Naive.matmul ~nframe:0 ~a ~view_a:va_t ~b:g ~view_b:vg ~dst:a_t_g;
       let rhs = Buf.dot b a_t_g in
       let scale = max 1.0 (max (abs_float lhs) (abs_float rhs)) in
       let tol = 1e-14 *. float_of_int (m * k * n) +. 1e-12 in
@@ -255,7 +255,7 @@ let test_matmul_hand () =
   let b = Buf.create 4 in
   List.iteri (fun i v -> Buf.set b i v) [5.;6.;7.;8.];
   let c = Buf.create 4 in
-  Kernel.Naive.matmul ~a ~view_a:(Ndview.contiguous [|2;2|])
+  Kernel.Naive.matmul ~nframe:0 ~a ~view_a:(Ndview.contiguous [|2;2|])
                       ~b ~view_b:(Ndview.contiguous [|2;2|]) ~dst:c;
   Alcotest.(check (float 1e-10)) "c[0,0]" 19.0 (Buf.get c 0);
   Alcotest.(check (float 1e-10)) "c[0,1]" 22.0 (Buf.get c 1);
@@ -269,7 +269,7 @@ let test_matmul_nonsquare () =
   let b = Buf.create 3 in
   List.iteri (fun i v -> Buf.set b i v) [4.;5.;6.];
   let c = Buf.create 1 in
-  Kernel.Naive.matmul ~a ~view_a:(Ndview.contiguous [|1;3|])
+  Kernel.Naive.matmul ~nframe:0 ~a ~view_a:(Ndview.contiguous [|1;3|])
                       ~b ~view_b:(Ndview.contiguous [|3;1|]) ~dst:c;
   Alcotest.(check (float 1e-10)) "c[0,0]" 32.0 (Buf.get c 0)
 
@@ -283,7 +283,7 @@ let test_matmul_transposed () =
   List.iteri (fun i v -> Buf.set b i v) [5.;6.;7.;8.];
   let c = Buf.create 4 in
   let vb = Ndview.transpose (Ndview.contiguous [|2;2|]) ~perm:[|1;0|] in
-  Kernel.Naive.matmul ~a ~view_a:(Ndview.contiguous [|2;2|])
+  Kernel.Naive.matmul ~nframe:0 ~a ~view_a:(Ndview.contiguous [|2;2|])
                       ~b ~view_b:vb ~dst:c;
   Alcotest.(check (float 1e-10)) "c[0,0]" 17.0 (Buf.get c 0);
   Alcotest.(check (float 1e-10)) "c[0,1]" 23.0 (Buf.get c 1);

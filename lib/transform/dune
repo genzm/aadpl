@@ -1,4 +1,5 @@
 (library
  (name transform)
  (public_name lang.transform)
+ (modules transform expand_rank)
  (libraries ast))
