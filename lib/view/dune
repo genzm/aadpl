@@ -1,0 +1,4 @@
+(library
+ (name view)
+ (public_name lang.view)
+ (modules ndview buf tensor))

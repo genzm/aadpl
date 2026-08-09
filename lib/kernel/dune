@@ -1,0 +1,4 @@
+(library
+ (name kernel)
+ (public_name lang.kernel)
+ (libraries view))
