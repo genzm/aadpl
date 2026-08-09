@@ -22,7 +22,7 @@ let assert_shape loc msg cond =
 
 let validate loc (p : Types.prim) (args : Tensor.t list) =
   match p, args with
-  | (Types.Neg | Exp | Log | Sqrt | Relu), [_] -> ()
+  | (Types.Neg | Exp | Log | Sqrt | Relu | Step), [_] -> ()
   | (Types.Add | Sub | Mul | Div | Max2), [x; y] ->
     assert_shape loc "map2: shape mismatch" (shape_of x = shape_of y)
   | Sum_axis axis, [x] ->
@@ -90,6 +90,7 @@ let map1_f = function
   | Log  -> log
   | Sqrt -> sqrt
   | Relu -> fun x -> if x > 0.0 then x else 0.0
+  | Step -> fun x -> if x > 0.0 then 1.0 else 0.0
   | _ -> assert false
 
 let map2_f = function
@@ -104,7 +105,7 @@ let map2_f = function
 
 let alloc_shape (p : Types.prim) (args : Tensor.t list) : int array =
   match p, args with
-  | (Types.Neg | Exp | Log | Sqrt | Relu), [x] -> shape_of x
+  | (Types.Neg | Exp | Log | Sqrt | Relu | Step), [x] -> shape_of x
   | (Types.Add | Sub | Mul | Div | Max2), [x; _] -> shape_of x
   | (Sum_axis axis | Max_axis axis), [x] ->
     let s = shape_of x in
@@ -170,7 +171,7 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
        let on = Array.fold_left ( * ) 1 os in
        let dst = Buf.create on in
        (match p, vs with
-        | (Neg | Exp | Log | Sqrt | Relu), [x] ->
+        | (Neg | Exp | Log | Sqrt | Relu | Step), [x] ->
           Kernel.Naive.map1 ~f:(map1_f p) ~src:x.buf ~view:x.view ~dst;
           Tensor.of_buf dst (Ndview.contiguous os)
         | (Add | Sub | Mul | Div | Max2), [x; y] ->

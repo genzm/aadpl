@@ -4,7 +4,7 @@ let dummy_loc = { file = "<none>"; line = 0; col = 0 }
 
 type prim =
   (* map1 *)
-  | Neg | Exp | Log | Sqrt | Relu
+  | Neg | Exp | Log | Sqrt | Relu | Step
   (* map2 — require shape match *)
   | Add | Sub | Mul | Div | Max2
   (* reduce *)
@@ -47,6 +47,7 @@ let pp_prim fmt = function
   | Log -> Format.fprintf fmt "log"
   | Sqrt -> Format.fprintf fmt "sqrt"
   | Relu -> Format.fprintf fmt "relu"
+  | Step -> Format.fprintf fmt "step"
   | Add -> Format.fprintf fmt "add"
   | Sub -> Format.fprintf fmt "sub"
   | Mul -> Format.fprintf fmt "mul"
