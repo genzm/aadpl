@@ -126,8 +126,8 @@ and output_shape (p : prim) (shapes : int array list) : int array =
 
 exception Expand_error of loc * string
 
-let expand (e : expr) : expr =
-  let rec go senv e =
+let expand ?(senv : shape_env = []) (e : expr) : expr =
+  let rec go (senv : shape_env) e =
     match e with
     | Const _ | Var _ -> e
     | Let (loc, s, e1, e2) ->
@@ -176,7 +176,7 @@ let expand (e : expr) : expr =
         !a) args frames in
       Prim (loc, shift_prim max_frame p, args_bc)
   in
-  go [] e
+  go senv e
 
 (* is_expanded: true if no Rank nodes remain *)
 let rec is_expanded (e : expr) : bool =

@@ -48,6 +48,11 @@
  (modules test_desugar)
  (libraries transform ast view alcotest))
 
+(test
+ (name test_linreg)
+ (modules test_linreg)
+ (libraries transform ast view alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)
