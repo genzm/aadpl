@@ -179,22 +179,22 @@ let test_max_axis () =
 let test_transpose () =
   let x = tensor_of_list [|2;3|] [1.;2.;3.;4.;5.;6.] in
   let dx = tensor_of_list [|2;3|] [0.1;0.2;0.3;0.4;0.5;0.6] in
-  check_jvp_1 "transpose" (fun v -> prim (Transpose [|1;0|]) [v]) x dx
+  check_jvp_1 "transpose" (fun v -> prim (Apply_view [Vtranspose [|1;0|]]) [v]) x dx
 
 let test_broadcast () =
   let x = tensor_of_list [|3|] [1.;2.;3.] in
   let dx = tensor_of_list [|3|] [0.1;0.2;0.3] in
-  check_jvp_1 "broadcast" (fun v -> prim (Broadcast (0, 2)) [v]) x dx
+  check_jvp_1 "broadcast" (fun v -> prim (Apply_view [Vbroadcast (0, 2)]) [v]) x dx
 
 let test_slice () =
   let x = tensor_of_list [|4|] [1.;2.;3.;4.] in
   let dx = tensor_of_list [|4|] [0.1;0.2;0.3;0.4] in
-  check_jvp_1 "slice" (fun v -> prim (Slice [|(1,3,1)|]) [v]) x dx
+  check_jvp_1 "slice" (fun v -> prim (Apply_view [Vslice [|(1,3,1)|]]) [v]) x dx
 
 let test_reshape () =
   let x = tensor_of_list [|6|] [1.;2.;3.;4.;5.;6.] in
   let dx = tensor_of_list [|6|] [0.1;0.2;0.3;0.4;0.5;0.6] in
-  check_jvp_1 "reshape" (fun v -> prim (Reshape [|2;3|]) [v]) x dx
+  check_jvp_1 "reshape" (fun v -> prim (Apply_view [Vreshape [|2;3|]]) [v]) x dx
 
 let test_gather () =
   let x = tensor_of_list [|5|] [10.;20.;30.;40.;50.] in

@@ -131,8 +131,8 @@ let test_sum_axis_rank1 () =
 let test_transpose_batched () =
   let m = tensor_of_list [|2;2;3|]
     [1.;2.;3.;4.;5.;6.; 7.;8.;9.;10.;11.;12.] in
-  let r = expand_eval (rank 2 (Transpose [|1;0|]) [const m]) in
-  let expected = eval_expr (prim (Transpose [|0;2;1|]) [const m]) in
+  let r = expand_eval (rank 2 (Apply_view [Vtranspose [|1;0|]]) [const m]) in
+  let expected = eval_expr (prim (Apply_view [Vtranspose [|0;2;1|]]) [const m]) in
   for i = 0 to 1 do
     for j = 0 to 2 do
       for k = 0 to 1 do
@@ -162,7 +162,7 @@ let test_slice_rank2 () =
     [ 0.; 1.; 2.; 3.;  4.; 5.; 6.; 7.;  8.; 9.;10.;11.;
      12.;13.;14.;15.; 16.;17.;18.;19.; 20.;21.;22.;23.] in
   let r = expand_eval
-    (rank 2 (Slice [|(0,2,1);(1,3,1)|]) [const t]) in
+    (rank 2 (Apply_view [Vslice [|(0,2,1);(1,3,1)|]]) [const t]) in
   (* slice on cell [3,4] with [(0,2,1);(1,3,1)] → [2,2] per batch
      Expanded: Slice [(0,2,1);(0,2,1);(1,3,1)]
      batch 0: rows 0-1, cols 1-2 → [[1,2],[5,6]]
@@ -184,7 +184,7 @@ let test_reshape_rank1 () =
      Result shape: [2,2,3] *)
   let t = tensor_of_list [|2;6|]
     [1.;2.;3.;4.;5.;6.; 7.;8.;9.;10.;11.;12.] in
-  let r = expand_eval (rank 1 (Reshape [|2;3|]) [const t]) in
+  let r = expand_eval (rank 1 (Apply_view [Vreshape [|2;3|]]) [const t]) in
   Alcotest.(check (float 1e-10)) "r[0,0,0]" 1.0 (get r [|0;0;0|]);
   Alcotest.(check (float 1e-10)) "r[0,1,2]" 6.0 (get r [|0;1;2|]);
   Alcotest.(check (float 1e-10)) "r[1,0,0]" 7.0 (get r [|1;0;0|]);
@@ -251,7 +251,7 @@ let test_expand_pp_bias () =
   let e = rank 1 Add [const b; const h] in
   let e' = Transform.Expand_rank.expand e in
   let s = Format.asprintf "%a" pp e' in
-  (* Should contain "broadcast" showing the insertion *)
+  (* Should contain "apply_view(B(" showing the Vbroadcast insertion *)
   let contains sub s =
     let len_sub = String.length sub in
     let len_s = String.length s in
@@ -261,7 +261,7 @@ let test_expand_pp_bias () =
       else check (i + 1)
     in check 0
   in
-  Alcotest.(check bool) "contains broadcast" true (contains "broadcast" s)
+  Alcotest.(check bool) "contains apply_view(B(" true (contains "apply_view(B(" s)
 
 (* --- k < cell_rank error --- *)
 

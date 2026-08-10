@@ -71,10 +71,10 @@ let test_matmul_transpose () =
   let a = tensor_of_list [|2;3|] [1.;2.;3.;4.;5.;6.] in
   let b = tensor_of_list [|3;2|] [7.;8.;9.;10.;11.;12.] in
   let ab_t = eval_expr
-    (prim (Transpose [|1;0|]) [prim Matmul [const a; const b]]) in
+    (prim (Apply_view [Vtranspose [|1;0|]]) [prim Matmul [const a; const b]]) in
   let bt_at = eval_expr
-    (prim Matmul [prim (Transpose [|1;0|]) [const b];
-                  prim (Transpose [|1;0|]) [const a]]) in
+    (prim Matmul [prim (Apply_view [Vtranspose [|1;0|]]) [const b];
+                  prim (Apply_view [Vtranspose [|1;0|]]) [const a]]) in
   for i = 0 to 1 do
     for j = 0 to 1 do
       Alcotest.(check (float 1e-10))
@@ -122,7 +122,7 @@ let test_reshape_then_sum () =
   (* reshape [1,2,3,4,5,6] to [2,3] then sum axis 1 = [6, 15] *)
   let v = tensor_of_list [|6|] [1.;2.;3.;4.;5.;6.] in
   let r = eval_expr
-    (prim (Sum_axis 1) [prim (Reshape [|2;3|]) [const v]]) in
+    (prim (Sum_axis 1) [prim (Apply_view [Vreshape [|2;3|]]) [const v]]) in
   Alcotest.(check (float 1e-10)) "s[0]" 6.0 (Buf.get r.buf 0);
   Alcotest.(check (float 1e-10)) "s[1]" 15.0 (Buf.get r.buf 1)
 
@@ -131,7 +131,7 @@ let test_reshape_then_sum () =
 let test_transpose_is_view () =
   (* transpose returns a view (shared=true), not a copy *)
   let m = tensor_of_list [|2;3|] [1.;2.;3.;4.;5.;6.] in
-  let r = eval_expr (prim (Transpose [|1;0|]) [const m]) in
+  let r = eval_expr (prim (Apply_view [Vtranspose [|1;0|]]) [const m]) in
   Alcotest.(check bool) "shared" true r.View.Tensor.buf.View.Buf.shared;
   (* the value is correct *)
   Alcotest.(check (float 1e-10)) "t[0,0]" 1.0 (get r [|0;0|]);
@@ -140,7 +140,7 @@ let test_transpose_is_view () =
 
 let test_broadcast_is_view () =
   let v = tensor_of_list [|3|] [10.;20.;30.] in
-  let r = eval_expr (prim (Broadcast (0, 2)) [const v]) in
+  let r = eval_expr (prim (Apply_view [Vbroadcast (0, 2)]) [const v]) in
   Alcotest.(check bool) "shared" true r.View.Tensor.buf.View.Buf.shared;
   Alcotest.(check (float 1e-10)) "b[0,0]" 10.0 (get r [|0;0|]);
   Alcotest.(check (float 1e-10)) "b[1,2]" 30.0 (get r [|1;2|])
@@ -149,8 +149,8 @@ let test_view_then_compute () =
   (* transpose then add: transpose returns view, add reads through it *)
   let m = tensor_of_list [|2;2|] [1.;2.;3.;4.] in
   let r = eval_expr
-    (prim Add [prim (Transpose [|1;0|]) [const m];
-               prim (Transpose [|1;0|]) [const m]]) in
+    (prim Add [prim (Apply_view [Vtranspose [|1;0|]]) [const m];
+               prim (Apply_view [Vtranspose [|1;0|]]) [const m]]) in
   (* [[1,3],[2,4]] + [[1,3],[2,4]] = [[2,6],[4,8]] *)
   Alcotest.(check (float 1e-10)) "r[0,0]" 2.0 (get r [|0;0|]);
   Alcotest.(check (float 1e-10)) "r[0,1]" 6.0 (get r [|0;1|]);
@@ -161,7 +161,7 @@ let test_broadcast_then_sum () =
   (* broadcast [1,2,3] to [2,3] then sum axis 0 = [2,4,6] *)
   let v = tensor_of_list [|3|] [1.;2.;3.] in
   let r = eval_expr
-    (prim (Sum_axis 0) [prim (Broadcast (0, 2)) [const v]]) in
+    (prim (Sum_axis 0) [prim (Apply_view [Vbroadcast (0, 2)]) [const v]]) in
   Alcotest.(check (float 1e-10)) "s[0]" 2.0 (Buf.get r.buf 0);
   Alcotest.(check (float 1e-10)) "s[1]" 4.0 (Buf.get r.buf 1);
   Alcotest.(check (float 1e-10)) "s[2]" 6.0 (Buf.get r.buf 2)
@@ -199,7 +199,7 @@ let test_relu () =
 let test_pp () =
   let a = tensor_of_list [|2;2|] [1.;2.;3.;4.] in
   let e = let_ "x" (const a)
-    (prim Matmul [var "x"; prim (Transpose [|1;0|]) [var "x"]]) in
+    (prim Matmul [var "x"; prim (Apply_view [Vtranspose [|1;0|]]) [var "x"]]) in
   let s = Format.asprintf "%a" pp e in
   Alcotest.(check bool) "pp non-empty" true (String.length s > 0)
 

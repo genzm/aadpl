@@ -23,6 +23,31 @@
  (modules test_jvp)
  (libraries transform ast view alcotest))
 
+(test
+ (name test_forward)
+ (modules test_forward)
+ (libraries transform ast view alcotest))
+
+(test
+ (name test_unzip)
+ (modules test_unzip)
+ (libraries transform ast view alcotest))
+
+(test
+ (name test_transpose)
+ (modules test_transpose)
+ (libraries transform ast view alcotest))
+
+(test
+ (name test_viewspec)
+ (modules test_viewspec)
+ (libraries transform ast view alcotest))
+
+(test
+ (name test_desugar)
+ (modules test_desugar)
+ (libraries transform ast view alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)

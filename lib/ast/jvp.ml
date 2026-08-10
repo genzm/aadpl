@@ -192,31 +192,99 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
     (Tensor.of_buf dst_p (Ndview.contiguous os),
      Tensor.of_buf dst_t (Ndview.contiguous os))
 
-  (* --- structural ops: all linear — same op on tangent --- *)
-  | Transpose perm, [(x, dx)] ->
-    (Tensor.transpose x ~perm,
-     Tensor.transpose dx ~perm)
+  (* --- argmax: integer-valued, tangent is zero (T(Z) = 0) --- *)
+  | Argmax_axis axis, [(x, _dx)] ->
+    let os = Eval.alloc_shape p [x] in
+    let on = Array.fold_left ( * ) 1 os in
+    let argmax = Array.make on 0 in
+    let dst_max = Buf.create on in
+    Kernel.Naive.max_axis ~src:x.buf ~view:x.view ~axis ~dst:dst_max
+      ~dst_argmax:argmax;
+    let dst_p = Buf.create on in
+    for i = 0 to on - 1 do
+      Buf.set dst_p i (float_of_int argmax.(i))
+    done;
+    (Tensor.of_buf dst_p (Ndview.contiguous os),
+     Tensor.make os)
 
-  | Broadcast (axis, size), [(x, dx)] ->
-    (Tensor.broadcast x ~axis ~size,
-     Tensor.broadcast dx ~axis ~size)
+  (* --- select_axis: linear in values, integer indices (no tangent) --- *)
+  | Select_axis axis, [(x, dx); (idx, _didx)] ->
+    let os = Eval.alloc_shape p [x; idx] in
+    let on = Array.fold_left ( * ) 1 os in
+    let s = shape_of x in
+    let r = Array.length s in
+    let dst_p = Buf.create on in
+    let dst_t = Buf.create on in
+    Ndview.iter_indices os (fun oi out_idx ->
+      let j = int_of_float (Buf.get idx.buf
+        (Ndview.index_of idx.view out_idx)) in
+      let full_idx = Array.init r (fun k ->
+        if k < axis then out_idx.(k)
+        else if k = axis then j
+        else out_idx.(k - 1)) in
+      Buf.set dst_p oi
+        (Buf.get x.buf (Ndview.index_of x.view full_idx));
+      Buf.set dst_t oi
+        (Buf.get dx.buf (Ndview.index_of dx.view full_idx)));
+    (Tensor.of_buf dst_p (Ndview.contiguous os),
+     Tensor.of_buf dst_t (Ndview.contiguous os))
 
-  | Slice ranges, [(x, dx)] ->
-    (Tensor.slice x ~ranges,
-     Tensor.slice dx ~ranges)
+  (* --- scatter_add: linear (adjoint of gather) --- *)
+  | Scatter_add (axis, indices, target_shape), [(x, dx)] ->
+    let os = target_shape in
+    let on = Array.fold_left ( * ) 1 os in
+    let dst_p = Buf.create on in
+    let dst_t = Buf.create on in
+    for i = 0 to on - 1 do Buf.set dst_p i 0.0; Buf.set dst_t i 0.0 done;
+    (* Materialize to contiguous (scatter_add reads src flatly) *)
+    let sx = shape_of x in
+    let sn = Array.fold_left ( * ) 1 sx in
+    let materialize t =
+      if Ndview.is_contiguous t.Tensor.view then t.Tensor.buf
+      else begin
+        let tmp = Buf.create sn in
+        Tensor.read_view ~src:t.buf ~view:t.view ~dst:tmp; tmp
+      end in
+    let x_buf = materialize x in
+    let dx_buf = materialize dx in
+    let target_view = Ndview.contiguous os in
+    Kernel.Naive.scatter_add ~src:x_buf ~view:target_view ~axis ~indices ~acc:dst_p;
+    Kernel.Naive.scatter_add ~src:dx_buf ~view:target_view ~axis ~indices ~acc:dst_t;
+    (Tensor.of_buf dst_p (Ndview.contiguous os),
+     Tensor.of_buf dst_t (Ndview.contiguous os))
 
-  | Reshape new_shape, [(x, dx)] ->
-    let reshape_one t =
-      match Tensor.reshape t ~shape:new_shape with
-      | Some r -> r
-      | None ->
-        let n = Array.fold_left ( * ) 1 new_shape in
-        let dst = Buf.create n in
-        Tensor.read_view ~src:t.buf ~view:t.view ~dst;
-        let r = Tensor.of_buf dst (Ndview.contiguous new_shape) in
-        r.buf.Buf.shared <- true; r
-    in
-    (reshape_one x, reshape_one dx)
+  (* --- scatter_select_add: linear in first arg (adjoint of select_axis) --- *)
+  | Scatter_select_add (axis, target_axis_size), [(x, dx); (idx, _didx)] ->
+    let sx = shape_of x in
+    let r = Array.length sx in
+    let os = Array.init (r + 1) (fun i ->
+      if i < axis then sx.(i)
+      else if i = axis then target_axis_size
+      else sx.(i - 1)) in
+    let on = Array.fold_left ( * ) 1 os in
+    let dst_p = Buf.create on in
+    let dst_t = Buf.create on in
+    for i = 0 to on - 1 do Buf.set dst_p i 0.0; Buf.set dst_t i 0.0 done;
+    let target_view = Ndview.contiguous os in
+    Ndview.iter_indices sx (fun _si src_idx ->
+      let j = int_of_float (Buf.get idx.buf
+        (Ndview.index_of idx.view src_idx)) in
+      let full_idx = Array.init (r + 1) (fun k ->
+        if k < axis then src_idx.(k)
+        else if k = axis then j
+        else src_idx.(k - 1)) in
+      let pos = Ndview.index_of target_view full_idx in
+      Buf.set dst_p pos (Buf.get dst_p pos +.
+        Buf.get x.buf (Ndview.index_of x.view src_idx));
+      Buf.set dst_t pos (Buf.get dst_t pos +.
+        Buf.get dx.buf (Ndview.index_of dx.view src_idx)));
+    (Tensor.of_buf dst_p (Ndview.contiguous os),
+     Tensor.of_buf dst_t (Ndview.contiguous os))
+
+  (* --- viewspec ops: linear — same op on tangent --- *)
+  | (Apply_view _ | Adjoint_view _), [(x, dx)] ->
+    (Eval.eval [] (Types.prim p [Types.const x]),
+     Eval.eval [] (Types.prim p [Types.const dx]))
 
   (* --- gather: linear in values (§3.1) --- *)
   | Gather (axis, indices), [(x, dx)] ->

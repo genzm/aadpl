@@ -13,13 +13,39 @@ open Ast.Types
 let cell_rank : prim -> int list = function
   | Neg | Exp | Log | Sqrt | Relu | Step -> [0]
   | Add | Sub | Mul | Div | Max2  -> [0; 0]
-  | Sum_axis _ | Max_axis _       -> [1]
-  | Transpose perm                -> [Array.length perm]
-  | Slice ranges                  -> [Array.length ranges]
+  | Sum_axis _ | Max_axis _ | Argmax_axis _ -> [1]
+  | Select_axis _                -> [1; 0]  (* data rank >= 1; index is scalar-per-cell *)
   | Gather _                      -> [1]
   | Matmul                        -> [2; 2]
-  | Reshape _                     -> [1]
-  | Broadcast _                   -> assert false
+  | Scatter_add (_, _, _)         -> [1]
+  | Scatter_select_add _          -> [0; 0]
+  | Apply_view spec ->
+    [match spec with
+     | [] -> 0
+     | op :: _ -> (match op with
+       | Vtranspose p -> Array.length p
+       | Vslice r -> Array.length r
+       | Vbroadcast _ -> 0
+       | Vreshape _ -> 1)]
+  | Adjoint_view (spec, target_shape) ->
+    [Array.length (viewspec_output_shape spec target_shape)]
+
+(* shift_viewop/shift_viewspec: shift viewspec axis parameters by frame *)
+let shift_viewop (frame : int array) (op : viewop) : viewop =
+  let f = Array.length frame in
+  match op with
+  | Vtranspose p ->
+    let fr = Array.init f (fun i -> i) in
+    let cr = Array.map (fun i -> i + f) p in
+    Vtranspose (Array.append fr cr)
+  | Vslice r ->
+    let frame_ranges = Array.map (fun sz -> (0, sz, 1)) frame in
+    Vslice (Array.append frame_ranges r)
+  | Vbroadcast (a, s) -> Vbroadcast (a + f, s)
+  | Vreshape s -> Vreshape (Array.append frame s)
+
+let shift_viewspec (frame : int array) (spec : viewspec) : viewspec =
+  List.map (shift_viewop frame) spec
 
 (* shift_prim: shift axis parameters by frame (full shape, not just rank).
    Slice needs frame sizes for the prepended full-range slices.
@@ -30,16 +56,16 @@ let shift_prim (frame : int array) (p : prim) : prim =
   else match p with
   | Sum_axis a              -> Sum_axis (a + f)
   | Max_axis a              -> Max_axis (a + f)
-  | Transpose perm          ->
-    let fr = Array.init f (fun i -> i) in
-    let cr = Array.map (fun i -> i + f) perm in
-    Transpose (Array.append fr cr)
-  | Broadcast (axis, size)  -> Broadcast (axis + f, size)
+  | Argmax_axis a           -> Argmax_axis (a + f)
+  | Select_axis a           -> Select_axis (a + f)
+  | Scatter_add (axis, indices, target_shape) ->
+    Scatter_add (axis + f, indices, Array.append frame target_shape)
+  | Scatter_select_add (axis, sz) ->
+    Scatter_select_add (axis + f, sz)
   | Gather (axis, indices)  -> Gather (axis + f, indices)
-  | Slice ranges            ->
-    let frame_ranges = Array.map (fun sz -> (0, sz, 1)) frame in
-    Slice (Array.append frame_ranges ranges)
-  | Reshape shape           -> Reshape (Array.append frame shape)
+  | Apply_view spec         -> Apply_view (shift_viewspec frame spec)
+  | Adjoint_view (spec, ts) ->
+    Adjoint_view (shift_viewspec frame spec, Array.append frame ts)
   | _                       -> p  (* elementwise, matmul: no axis params *)
 
 (* --- shape inference --- *)
@@ -66,26 +92,24 @@ and output_shape (p : prim) (shapes : int array list) : int array =
   match p, shapes with
   | (Neg | Exp | Log | Sqrt | Relu | Step), [s] -> s
   | (Add | Sub | Mul | Div | Max2), [s; _] -> s
-  | (Sum_axis axis | Max_axis axis), [s] ->
+  | (Sum_axis axis | Max_axis axis | Argmax_axis axis), [s] ->
     let r = Array.length s in
     Array.init (r - 1) (fun i -> if i < axis then s.(i) else s.(i + 1))
-  | Transpose perm, [s] ->
-    Array.init (Array.length perm) (fun i -> s.(perm.(i)))
-  | Reshape shape, [_] -> shape
-  | Broadcast (axis, size), [s] ->
+  | Select_axis axis, [s; _] ->
     let r = Array.length s in
-    Array.init (r + 1) (fun i ->
-      if i < axis then s.(i)
-      else if i = axis then size
-      else s.(i - 1))
-  | Slice ranges, [s] ->
-    Array.init (Array.length s) (fun k ->
-      let (start, stop, step) = ranges.(k) in
-      if step > 0 then (stop - start + step - 1) / step
-      else (start - stop + (-step) - 1) / (-step))
+    Array.init (r - 1) (fun i -> if i < axis then s.(i) else s.(i + 1))
   | Gather (axis, indices), [s] ->
     Array.init (Array.length s) (fun k ->
       if k = axis then Array.length indices else s.(k))
+  | Scatter_add (_, _, target_shape), [_] -> target_shape
+  | Scatter_select_add (axis, target_axis_size), [s; _] ->
+    let r = Array.length s in
+    Array.init (r + 1) (fun i ->
+      if i < axis then s.(i)
+      else if i = axis then target_axis_size
+      else s.(i - 1))
+  | Apply_view spec, [s] -> viewspec_output_shape spec s
+  | Adjoint_view (_, target_shape), [_] -> target_shape
   | Matmul, [sa; sb] ->
     (* batched matmul: frame ++ [m; n] *)
     let ra = Array.length sa in
@@ -142,12 +166,12 @@ let expand (e : expr) : expr =
               Printf.sprintf "arg %d frame mismatch at axis %d: %d vs %d"
                 i j fi.(j) max_frame.(j)))
         done) frames;
-      (* insert Broadcast for missing frame axes *)
+      (* insert Vbroadcast for missing frame axes *)
       let args_bc = List.map2 (fun arg fi ->
         let ni = Array.length fi in
         let a = ref arg in
         for j = ni to nf - 1 do
-          a := Prim (loc, Broadcast (j, max_frame.(j)), [!a])
+          a := Prim (loc, Apply_view [Vbroadcast (j, max_frame.(j))], [!a])
         done;
         !a) args frames in
       Prim (loc, shift_prim max_frame p, args_bc)
