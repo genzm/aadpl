@@ -1,0 +1,7 @@
+(library
+ (name blas_stub)
+ (public_name lang.blas_stub)
+ (modules blas_stub)
+ (foreign_stubs (language c) (names cblas_stub))
+ (c_library_flags (-framework Accelerate))
+ (libraries view))

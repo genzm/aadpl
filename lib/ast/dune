@@ -2,4 +2,4 @@
  (name ast)
  (public_name lang.ast)
  (modules ast types eval jvp)
- (libraries view kernel))
+ (libraries view kernel blas_stub unix))

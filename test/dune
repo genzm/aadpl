@@ -6,7 +6,7 @@
 (test
  (name test_kernel)
  (modules test_kernel gen_view)
- (libraries kernel view alcotest qcheck qcheck-alcotest))
+ (libraries kernel ast view alcotest qcheck qcheck-alcotest))
 
 (test
  (name test_eval)
@@ -52,6 +52,11 @@
  (name test_linreg)
  (modules test_linreg)
  (libraries transform ast view alcotest))
+
+(test
+ (name test_perf)
+ (modules test_perf)
+ (libraries transform ast view blas_stub alcotest))
 
 (executable
  (name test_coverage)

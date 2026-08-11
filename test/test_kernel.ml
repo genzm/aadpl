@@ -338,6 +338,52 @@ let test_scatter_add_hand () =
   Alcotest.(check (float 1e-10)) "acc[3]" 2.0 (Buf.get acc 3);
   Alcotest.(check (float 1e-10)) "acc[4]" 0.0 (Buf.get acc 4)
 
+(* === BLAS vs naive matmul agreement ===
+   Generate random matrices with optional transposed views.
+   Naive kernel (index_of loop) must agree with eval's BLAS path
+   (which materializes non-contiguous inputs). *)
+
+let test_blas_naive_agree =
+  QCheck.Test.make ~count:200 ~name:"BLAS agrees with naive (transpose views)"
+    (QCheck.make (
+      let open QCheck.Gen in
+      let* m = int_range 1 20 in
+      let* k = int_range 1 20 in
+      let* n = int_range 1 20 in
+      let* trans_a = bool in
+      let* trans_b = bool in
+      return (m, k, n, trans_a, trans_b)))
+    (fun (m, k, n, trans_a, trans_b) ->
+      (* Create A:[m,k] and B:[k,n], optionally via transposed storage *)
+      let a_buf = Buf.create (m * k) in Buf.fill_random a_buf;
+      let b_buf = Buf.create (k * n) in Buf.fill_random b_buf;
+      let view_a = if trans_a
+        then Ndview.transpose (Ndview.contiguous [|k; m|]) ~perm:[|1;0|]
+        else Ndview.contiguous [|m; k|] in
+      let view_b = if trans_b
+        then Ndview.transpose (Ndview.contiguous [|n; k|]) ~perm:[|1;0|]
+        else Ndview.contiguous [|k; n|] in
+      (* Naive *)
+      let dst_naive = Buf.create (m * n) in
+      Kernel.Naive.matmul ~a:a_buf ~view_a ~b:b_buf ~view_b ~dst:dst_naive ~nframe:0;
+      (* BLAS via eval *)
+      let ta = Tensor.of_buf a_buf view_a in
+      let tb = Tensor.of_buf b_buf view_b in
+      let expr = Ast.Types.prim Ast.Types.Matmul
+        [Ast.Types.const ta; Ast.Types.const tb] in
+      let result = Ast.Eval.eval [] expr in
+      (* Compare all elements *)
+      let ok = ref true in
+      for i = 0 to m * n - 1 do
+        let nv = Buf.get dst_naive i in
+        let bv = Buf.get result.buf
+          (Ndview.index_of result.view
+             [| i / n; i mod n |]) in
+        let err = abs_float (bv -. nv) in
+        if err > 1e-10 *. (abs_float nv +. 1e-15) then ok := false
+      done;
+      !ok)
+
 let () =
   let open Alcotest in
   run "kernel" [
@@ -351,6 +397,9 @@ let () =
     "view-agree", List.map (fun t -> QCheck_alcotest.to_alcotest t) [
       test_map1_agrees_read_view;
       test_map2_agrees_read_views;
+    ];
+    "blas", List.map (fun t -> QCheck_alcotest.to_alcotest t) [
+      test_blas_naive_agree;
     ];
     "hand", [
       test_case "sum_axis" `Quick test_sum_axis_hand;

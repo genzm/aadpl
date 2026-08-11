@@ -303,6 +303,31 @@ let test_8_3_bias_converge () =
     (Printf.sprintf "converged to OLS (rel_err=%.2e)" rel_err)
     true (rel_err < 1e-2)
 
+(* --- 9-0: stats instrumentation smoke test --- *)
+
+let test_9_0_stats () =
+  let n = 50 and d = 3 in
+  let (x, y, _) = gen_linreg_data ~n ~d ~noise_std:0.1 in
+  let loss_expr = make_linreg_loss_expr ~n ~d x y in
+  let gp = Transform.grad ~param_shapes:[("w", [|d|])] loss_expr in
+  let env = ref [("w", Tensor.make [|d|])] in
+  Ast.Eval.reset_stats ();
+  Ast.Eval.enable_stats ();
+  for _step = 1 to 10 do
+    let _l = scalar_val (eval_expr !env gp.loss) in
+    let g = eval_expr !env (List.assoc "w" gp.grads) in
+    env := sgd_update !env [("w", g)] ~lr:0.01
+  done;
+  Printf.printf "\n--- 9-0 stats report (10 steps, N=%d, D=%d) ---\n" n d;
+  Ast.Eval.report ();
+  Ast.Eval.disable_stats ();
+  (* Verify stats were actually collected *)
+  let s = Ast.Eval.stats in
+  Alcotest.(check bool) "buffers allocated > 0"
+    true (s.buffers_allocated > 0);
+  Alcotest.(check bool) "kernel stats non-empty"
+    true (Hashtbl.length s.kernel_stats > 0)
+
 let () =
   let open Alcotest in
   run "linreg" [
@@ -317,5 +342,8 @@ let () =
     "8-3 bias", [
       test_case "bias grad shape + fd check" `Quick test_8_3_bias_grad;
       test_case "bias converge" `Quick test_8_3_bias_converge;
+    ];
+    "9-0 stats", [
+      test_case "instrumentation smoke" `Quick test_9_0_stats;
     ];
   ]

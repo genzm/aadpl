@@ -12,3 +12,4 @@ _opam/
 *.o
 *.a
 .DS_Store
+data/
