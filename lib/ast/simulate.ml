@@ -103,7 +103,8 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
         | Var _ as e -> e
         | Prim (l, p, args) -> Prim (l, p, List.map lift_consts args)
         | Let (l, s, e1, e2) -> Let (l, s, lift_consts e1, lift_consts e2)
-        | e -> e in
+        | Rank _ | Sample _ | Score _ ->
+          failwith "batch fwd: non-elementwise construct" in
       Eval.eval env' (lift_consts fwd)
     end
 

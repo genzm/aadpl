@@ -1,5 +1,5 @@
 (library
  (name transform)
  (public_name lang.transform)
- (modules transform expand_rank desugar forward unzip transpose)
+ (modules transform expand_rank desugar forward unzip transpose reparam)
  (libraries ast))

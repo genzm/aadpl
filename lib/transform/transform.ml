@@ -3,6 +3,7 @@ module Desugar = Desugar
 module Forward = Forward
 module Unzip = Unzip
 module Transpose = Transpose
+module Reparam = Reparam
 
 open Ast.Types
 

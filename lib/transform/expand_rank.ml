@@ -87,8 +87,8 @@ let rec infer_shape (senv : shape_env) (e : expr) : int array =
     infer_shape ((s, sh1) :: senv) body
   | Rank _ ->
     failwith "infer_shape: nested Rank not supported (expand inner Rank first)"
-  | Sample _ -> failwith "infer_shape: Sample not supported"
-  | Score _ -> failwith "infer_shape: Score not supported"
+  | Sample (_, _, frame, _) -> frame
+  | Score _ -> [||]
 
 and output_shape (p : prim) (shapes : int array list) : int array =
   match p, shapes with
@@ -129,7 +129,15 @@ and output_shape (p : prim) (shapes : int array list) : int array =
 exception Expand_error of loc * string
 
 let expand ?(senv : shape_env = []) (e : expr) : expr =
-  let rec go (senv : shape_env) e =
+  let rec go_dist senv = function
+    | D_uniform -> D_uniform
+    | D_categorical e -> D_categorical (go senv e)
+    | D_pushforward { fwd_var; fwd; inv_var; inv; base } ->
+      D_pushforward { fwd_var; fwd = go senv fwd;
+                      inv_var; inv = go senv inv;
+                      base = go_dist senv base }
+    | D_product (a, b) -> D_product (go_dist senv a, go_dist senv b)
+  and go (senv : shape_env) e =
     match e with
     | Const _ | Var _ -> e
     | Let (loc, s, e1, e2) ->
@@ -138,8 +146,9 @@ let expand ?(senv : shape_env = []) (e : expr) : expr =
       Let (loc, s, e1', go ((s, sh1) :: senv) e2)
     | Prim (loc, p, args) ->
       Prim (loc, p, List.map (go senv) args)
-    | Sample _ -> failwith "expand: Sample not supported"
-    | Score _ -> failwith "expand: Score not supported"
+    | Sample (l, name, frame, dist) ->
+      Sample (l, name, frame, go_dist senv dist)
+    | Score (l, e) -> Score (l, go senv e)
     | Rank (loc, k, p, args) ->
       let args = List.map (go senv) args in
       let crs = cell_rank p in

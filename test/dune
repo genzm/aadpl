@@ -68,6 +68,11 @@
  (modules test_prob)
  (libraries ast prng alcotest))
 
+(test
+ (name test_reparam)
+ (modules test_reparam)
+ (libraries transform ast alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)
