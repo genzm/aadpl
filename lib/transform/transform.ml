@@ -49,6 +49,27 @@ let grad ~(param_shapes : (string * int array) list)
   let e = Desugar.fuse_views e in
   Forward.reset_gensym ();
   let (bs, primal_out, tangent_out) = Forward.forward e in
+  (* Zero data tangent variables: we differentiate wrt params, not data.
+     This prevents data tangent refs from leaking into primal bindings. *)
+  let data_tangent_zeros =
+    List.map (fun (s, sh) ->
+      (Forward.tangent_name s, const (View.Tensor.make sh))
+    ) data_shapes in
+  let rec subst_data_tangents e =
+    match e with
+    | Var (_, s) ->
+      (match List.assoc_opt s data_tangent_zeros with
+       | Some z -> z | None -> e)
+    | Const _ -> e
+    | Prim (l, p, args) ->
+      Prim (l, p, List.map subst_data_tangents args)
+    | Let (l, s, e1, e2) ->
+      Let (l, s, subst_data_tangents e1, subst_data_tangents e2)
+    | Rank _ | Sample _ | Score _ -> e in
+  let bs = if data_shapes = [] then bs
+    else List.map (fun (n, e) -> (n, subst_data_tangents e)) bs in
+  let tangent_out = if data_shapes = [] then tangent_out
+    else subst_data_tangents tangent_out in
   let seeds = List.map (fun (s, _) -> Forward.tangent_name s) param_shapes in
   let uz = Unzip.unzip (bs, primal_out, tangent_out) ~seeds in
   let seed_shapes =
@@ -66,7 +87,7 @@ let grad ~(param_shapes : (string * int array) list)
   (* Loss: wrap primal bindings around primal output *)
   let loss = Forward.wrap_bindings uz.primal_bindings uz.primal_out in
   (* Scalar cotangent = 1.0 *)
-  let loss_shape = Expand_rank.infer_shape all_shapes loss in
+  let loss_shape = Expand_rank.infer_shape input_shapes loss in
   let ct_tensor = View.Tensor.make loss_shape in
   let ct_numel = Array.fold_left ( * ) 1 loss_shape in
   for i = 0 to ct_numel - 1 do View.Buf.set ct_tensor.buf i 1.0 done;

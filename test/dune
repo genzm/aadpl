@@ -73,6 +73,11 @@
  (modules test_reparam)
  (libraries transform ast alcotest))
 
+(test
+ (name test_elbo)
+ (modules test_elbo)
+ (libraries transform ast alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)

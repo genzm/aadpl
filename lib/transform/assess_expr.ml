@@ -50,24 +50,53 @@ let sum_frame frame e =
   let rec go i acc = if i = 0 then acc else go (i - 1) (prim (Sum_axis 0) [acc]) in
   go n e
 
+(* Substitute Var(from) → to_ in an expression, respecting Let shadowing *)
+let rec subst ~from ~(to_ : expr) (e : expr) : expr =
+  match e with
+  | Var (_, s) when s = from -> to_
+  | Var _ | Const _ -> e
+  | Prim (l, p, args) -> Prim (l, p, List.map (subst ~from ~to_) args)
+  | Let (l, s, e1, e2) ->
+    let e1' = subst ~from ~to_ e1 in
+    if s = from then Let (l, s, e1', e2)
+    else Let (l, s, e1', subst ~from ~to_ e2)
+  | Rank (l, k, p, args) -> Rank (l, k, p, List.map (subst ~from ~to_) args)
+  | Sample _ | Score _ -> e
+
 (* Build raw (scalar) log-density expression for a distribution.
    Forward AD is applied to the raw inv (no wrap_rank0/expand).
-   Returns None for zero contribution (D_uniform). *)
+   Returns None for zero contribution (D_uniform).
+
+   Tangent seeds are INLINED via substitution (not Let-bound) so the output
+   is a pure primal expression. This is critical: if tangent-named variables
+   appeared as Let bindings, a subsequent Forward.forward pass (Transform.grad)
+   would auto-generate bindings with the same names, causing Unzip collisions.
+
+   inv_var is renamed to a gensym'd name for the same reason. *)
 let rec log_density_raw dist x =
   match dist with
   | D_uniform -> None
   | D_categorical _ ->
     failwith "assess_expr: D_categorical log-density not yet implemented (Phase 12+)"
   | D_pushforward { inv_var; inv; base; _ } ->
+    (* Rename inv_var to a unique gensym'd name *)
+    let local_var = Forward.gensym "x" in
+    let inv = subst ~from:inv_var ~to_:(var local_var) inv in
     let fvs = free_vars inv in
-    let other_vars = List.filter (fun v -> v <> inv_var) fvs in
+    let other_vars = List.filter (fun v -> v <> local_var) fvs in
     (* Forward AD on raw (scalar) inv expression *)
     let (bs, primal, tangent) = Forward.forward inv in
-    (* Seed bindings: inv_var → x, tangent seeds *)
-    let seeds =
-      (inv_var, x) ::
-      (Forward.tangent_name inv_var, mk_scalar 1.0) ::
-      List.map (fun v -> (Forward.tangent_name v, mk_scalar 0.0)) other_vars in
+    (* Inline tangent seeds: substitute tangent-named free vars with constants.
+       inv_var tangent → 1.0 (derivative wrt itself), others → 0.0. *)
+    let inline e =
+      let e = subst ~from:(Forward.tangent_name local_var) ~to_:(mk_scalar 1.0) e in
+      List.fold_left (fun acc v ->
+        subst ~from:(Forward.tangent_name v) ~to_:(mk_scalar 0.0) acc
+      ) e other_vars in
+    let bs' = List.map (fun (name, e) -> (name, inline e)) bs in
+    let tangent' = inline tangent in
+    (* Primal seed: bind local_var to x (the slot value) *)
+    let primal_seed = [(local_var, x)] in
     (* u = inv(x), jac = d(inv)/dx *)
     let u_var = Forward.gensym "u" in
     let jac_var = Forward.gensym "jac" in
@@ -76,8 +105,8 @@ let rec log_density_raw dist x =
     let ld = match base_ld with
       | None -> log_jac
       | Some bld -> prim Add [bld; log_jac] in
-    let body = let_ u_var primal (let_ jac_var tangent ld) in
-    Some (Forward.wrap_bindings seeds (Forward.wrap_bindings bs body))
+    let body = let_ u_var primal (let_ jac_var tangent' ld) in
+    Some (Forward.wrap_bindings primal_seed (Forward.wrap_bindings bs' body))
   | D_product _ -> failwith "assess_expr: D_product not supported"
 
 (* Build log-density expression, handling frame broadcasting.
@@ -98,10 +127,10 @@ let log_density_expr ~env_shapes frame dist x =
       ) (free_vars raw) in
       Some (Expand_rank.expand ~senv wrapped)
 
-let assess_expr ~(env_shapes : (string * int array) list)
+let assess_expr ?(ns="a.") ~(env_shapes : (string * int array) list)
     (e : expr) (slots : (string * expr) list) : expr =
   Forward.reset_gensym ();
-  Forward.with_ns "a." (fun () ->
+  Forward.with_ns ns (fun () ->
     let rec go e =
       match e with
       | Const _ | Var _ -> mk_scalar 0.0
