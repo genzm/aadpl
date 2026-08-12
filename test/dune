@@ -58,6 +58,16 @@
  (modules test_perf)
  (libraries transform ast view blas_stub alcotest))
 
+(test
+ (name test_threefry)
+ (modules test_threefry)
+ (libraries prng alcotest))
+
+(test
+ (name test_prob)
+ (modules test_prob)
+ (libraries ast prng alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)

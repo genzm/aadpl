@@ -28,6 +28,8 @@ let rec free_vars (e : expr) : SS.t =
   | Let (_, s, e1, e2) ->
     SS.union (free_vars e1) (SS.remove s (free_vars e2))
   | Rank _ -> failwith "free_vars: Rank in forward output (expand first)"
+  | Sample _ -> failwith "free_vars: Sample not supported"
+  | Score _ -> failwith "free_vars: Score not supported"
 
 (* --- tangent dependency propagation --- *)
 
@@ -62,6 +64,8 @@ let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
     | Let (_, _, e1, e2) ->
       (match check_expr e1 with Some m -> Some m | None -> check_expr e2)
     | Rank _ -> Some "Rank in tangent bindings"
+    | Sample _ -> Some "Sample in tangent bindings"
+    | Score _ -> Some "Score in tangent bindings"
     | Prim (_, p, args) -> check_prim p args
   and check_prim p args =
     match p, args with

@@ -14,7 +14,7 @@ type viewspec = viewop list              (* applied left-to-right *)
 
 type prim =
   (* map1 *)
-  | Neg | Exp | Log | Sqrt | Relu | Step
+  | Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv
   (* map2 — require shape match *)
   | Add | Sub | Mul | Div | Max2
   (* reduce *)
@@ -35,17 +35,29 @@ type prim =
   | Matmul
 
 type expr =
-  | Const of loc * value
-  | Var   of loc * string
-  | Prim  of loc * prim * expr list
-  | Let   of loc * string * expr * expr
-  | Rank  of loc * int * prim * expr list
+  | Const  of loc * value
+  | Var    of loc * string
+  | Prim   of loc * prim * expr list
+  | Let    of loc * string * expr * expr
+  | Rank   of loc * int * prim * expr list
+  | Sample of loc * string * int array * dist
+  | Score  of loc * expr
 
 and value = View.Tensor.t   (* future: variant with dtype *)
 
+and dist =
+  | D_uniform
+  | D_categorical of expr
+  | D_pushforward of {
+      fwd_var : string; fwd : expr;
+      inv_var : string; inv : expr;
+      base : dist;
+    }
+  | D_product of dist * dist
+
 let loc_of = function
   | Const (l, _) | Var (l, _) | Prim (l, _, _) | Let (l, _, _, _)
-  | Rank (l, _, _, _) -> l
+  | Rank (l, _, _, _) | Sample (l, _, _, _) | Score (l, _) -> l
 
 (* --- constructors with dummy_loc for tests --- *)
 
@@ -54,6 +66,8 @@ let var s         = Var (dummy_loc, s)
 let prim p args   = Prim (dummy_loc, p, args)
 let let_ s e body = Let (dummy_loc, s, e, body)
 let rank k p args  = Rank (dummy_loc, k, p, args)
+let sample name frame dist = Sample (dummy_loc, name, frame, dist)
+let score e = Score (dummy_loc, e)
 
 (* --- viewspec shape computation --- *)
 
@@ -115,6 +129,8 @@ let pp_prim fmt = function
   | Sqrt -> Format.fprintf fmt "sqrt"
   | Relu -> Format.fprintf fmt "relu"
   | Step -> Format.fprintf fmt "step"
+  | Erf -> Format.fprintf fmt "erf"
+  | Erfinv -> Format.fprintf fmt "erfinv"
   | Add -> Format.fprintf fmt "add"
   | Sub -> Format.fprintf fmt "sub"
   | Mul -> Format.fprintf fmt "mul"
@@ -143,7 +159,16 @@ let pp_prim fmt = function
       pp_intlist (Array.to_list shape)
   | Matmul -> Format.fprintf fmt "matmul"
 
-let rec pp fmt = function
+let rec pp_dist fmt = function
+  | D_uniform -> Format.fprintf fmt "Uniform"
+  | D_categorical w -> Format.fprintf fmt "Cat(%a)" pp w
+  | D_pushforward { fwd_var; fwd; inv_var; inv; base } ->
+    Format.fprintf fmt "Push(%s->%a, %s->%a, %a)"
+      fwd_var pp fwd inv_var pp inv pp_dist base
+  | D_product (a, b) ->
+    Format.fprintf fmt "(%a × %a)" pp_dist a pp_dist b
+
+and pp fmt = function
   | Const (_, v) ->
     Format.fprintf fmt "(const %a)" View.Ndview.pp v.View.Tensor.view
   | Var (_, s) -> Format.fprintf fmt "%s" s
@@ -155,3 +180,32 @@ let rec pp fmt = function
   | Rank (_, k, p, args) ->
     Format.fprintf fmt "(%a⎉%d %a)" pp_prim p k
       (Format.pp_print_list ~pp_sep:Format.pp_print_space pp) args
+  | Sample (_, name, frame, dist) ->
+    Format.fprintf fmt "(sample %s [%a] %a)" name
+      pp_intlist (Array.to_list frame) pp_dist dist
+  | Score (_, e) ->
+    Format.fprintf fmt "(score %a)" pp e
+
+(* --- site duplication check --- *)
+
+exception Duplicate_site of loc * string
+
+let check_sites expr =
+  let seen = Hashtbl.create 8 in
+  let rec walk = function
+    | Sample (l, name, _, dist) ->
+      if Hashtbl.mem seen name then raise (Duplicate_site (l, name));
+      Hashtbl.replace seen name ();
+      walk_dist dist
+    | Score (_, e) -> walk e
+    | Const _ | Var _ -> ()
+    | Prim (_, _, args) -> List.iter walk args
+    | Let (_, _, e, body) -> walk e; walk body
+    | Rank (_, _, _, args) -> List.iter walk args
+  and walk_dist = function
+    | D_uniform -> ()
+    | D_categorical e -> walk e
+    | D_pushforward { fwd; inv; base; _ } -> walk fwd; walk inv; walk_dist base
+    | D_product (a, b) -> walk_dist a; walk_dist b
+  in
+  walk expr

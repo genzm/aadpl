@@ -61,6 +61,9 @@ let rec forward (e : expr) : bindings * expr * expr =
   | Rank (loc, _, _, _) ->
     raise (Ast.Eval.Eval_error (loc, "Rank must be expanded before forward"))
 
+  | Sample _ -> failwith "forward: Sample not supported"
+  | Score _ -> failwith "forward: Score not supported"
+
   | Prim (_loc, p, args) ->
     let fwd_args = List.map forward args in
     forward_prim p fwd_args
@@ -104,6 +107,31 @@ and forward_prim (p : prim) (fwd_args : (bindings * expr * expr) list)
     let r = gensym "r" in
     let all_bs = bs @ bs_v @ [(r, prim Step [v])] in
     (all_bs, var r, prim Sub [var r; var r])
+
+  | Erf, [(bs, px, tx)] ->
+    (* erf'(x) = (2/√π) exp(-x²); tangent = (2/√π) exp(-x²) * tx *)
+    let (bs_v, v) = ensure_var "p" px in
+    let mk_scalar f =
+      let t = View.Tensor.make [||] in
+      View.Buf.set t.buf 0 f; const t in
+    let two_over_sqrtpi = mk_scalar 1.1283791670955126 in
+    (bs @ bs_v,
+     prim Erf [v],
+     prim Mul [prim Mul [two_over_sqrtpi;
+                         prim Exp [prim Neg [prim Mul [v; v]]]]; tx])
+
+  | Erfinv, [(bs, px, tx)] ->
+    (* erfinv'(x) = (√π/2) exp(erfinv(x)²); residual = erfinv(x) *)
+    let (bs_v, v) = ensure_var "p" px in
+    let r = gensym "r" in
+    let mk_scalar f =
+      let t = View.Tensor.make [||] in
+      View.Buf.set t.buf 0 f; const t in
+    let sqrtpi_over_2 = mk_scalar 0.88622692545275801 in
+    let all_bs = bs @ bs_v @ [(r, prim Erfinv [v])] in
+    (all_bs, var r,
+     prim Mul [prim Mul [sqrtpi_over_2;
+                         prim Exp [prim Mul [var r; var r]]]; tx])
 
   (* === map2 linear === *)
   | Add, [(bs1, p1, t1); (bs2, p2, t2)] ->

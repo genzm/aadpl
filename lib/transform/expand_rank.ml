@@ -11,7 +11,7 @@ open Ast.Types
 (* cell_rank: intrinsic minimum rank per argument.
    k in Rank(k, p, args) must be >= max(cell_rank p). *)
 let cell_rank : prim -> int list = function
-  | Neg | Exp | Log | Sqrt | Relu | Step -> [0]
+  | Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv -> [0]
   | Add | Sub | Mul | Div | Max2  -> [0; 0]
   | Sum_axis _ | Max_axis _ | Argmax_axis _ -> [1]
   | Select_axis _                -> [1; 0]  (* data rank >= 1; index is scalar-per-cell *)
@@ -87,10 +87,12 @@ let rec infer_shape (senv : shape_env) (e : expr) : int array =
     infer_shape ((s, sh1) :: senv) body
   | Rank _ ->
     failwith "infer_shape: nested Rank not supported (expand inner Rank first)"
+  | Sample _ -> failwith "infer_shape: Sample not supported"
+  | Score _ -> failwith "infer_shape: Score not supported"
 
 and output_shape (p : prim) (shapes : int array list) : int array =
   match p, shapes with
-  | (Neg | Exp | Log | Sqrt | Relu | Step), [s] -> s
+  | (Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv), [s] -> s
   | (Add | Sub | Mul | Div | Max2), [s; _] -> s
   | (Sum_axis axis | Max_axis axis | Argmax_axis axis), [s] ->
     let r = Array.length s in
@@ -136,6 +138,8 @@ let expand ?(senv : shape_env = []) (e : expr) : expr =
       Let (loc, s, e1', go ((s, sh1) :: senv) e2)
     | Prim (loc, p, args) ->
       Prim (loc, p, List.map (go senv) args)
+    | Sample _ -> failwith "expand: Sample not supported"
+    | Score _ -> failwith "expand: Score not supported"
     | Rank (loc, k, p, args) ->
       let args = List.map (go senv) args in
       let crs = cell_rank p in
@@ -185,3 +189,5 @@ let rec is_expanded (e : expr) : bool =
   | Let (_, _, e1, e2) -> is_expanded e1 && is_expanded e2
   | Prim (_, _, args) -> List.for_all is_expanded args
   | Rank _ -> false
+  | Sample _ -> true
+  | Score _ -> true

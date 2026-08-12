@@ -1,0 +1,4 @@
+(library
+ (name prng)
+ (public_name lang.prng)
+ (modules threefry))

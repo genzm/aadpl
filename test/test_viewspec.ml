@@ -62,6 +62,8 @@ let rec has_prim_p pred (e : expr) : bool =
   | Prim (_, p, args) -> pred p || List.exists (has_prim_p pred) args
   | Let (_, _, e1, e2) -> has_prim_p pred e1 || has_prim_p pred e2
   | Rank _ -> false
+  | Sample _ -> false
+  | Score _ -> false
 
 (* --- (a) equivalence: Apply_view [op] = existing prim --- *)
 

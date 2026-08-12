@@ -11,6 +11,8 @@ let rec fuse_views (e : expr) : expr =
   | Let (loc, s, e1, e2) ->
     Let (loc, s, fuse_views e1, fuse_views e2)
   | Rank _ -> failwith "fuse_views: Rank must be expanded first"
+  | Sample _ -> failwith "fuse_views: Sample not supported"
+  | Score _ -> failwith "fuse_views: Score not supported"
   | Prim (loc, p, args) ->
     let args' = List.map fuse_views args in
     match p, args' with
@@ -39,3 +41,5 @@ let rec is_desugared (e : expr) : bool =
   | Let (_, _, e1, e2) -> is_desugared e1 && is_desugared e2
   | Prim (_, _, args) -> List.for_all is_desugared args
   | Rank _ -> false
+  | Sample _ -> true
+  | Score _ -> true

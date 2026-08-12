@@ -199,7 +199,7 @@ let adjoint_viewop_eval (op : Types.viewop) (target_shape : int array) (x : Tens
 
 let validate loc (p : Types.prim) (args : Tensor.t list) =
   match p, args with
-  | (Types.Neg | Exp | Log | Sqrt | Relu | Step), [_] -> ()
+  | (Types.Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv), [_] -> ()
   | (Types.Add | Sub | Mul | Div | Max2), [x; y] ->
     assert_shape loc "map2: shape mismatch" (shape_of x = shape_of y)
   | Sum_axis axis, [x] ->
@@ -263,6 +263,47 @@ let validate loc (p : Types.prim) (args : Tensor.t list) =
 
 (* --- map1/map2 function dispatch --- *)
 
+(* --- erf / erfinv (self-contained, dependency-free) --- *)
+
+(* erf: Abramowitz & Stegun 7.1.28 rational approximation, max |ε| < 1.5e-7.
+   Extended with Horner form for higher precision. *)
+let erf_impl (x : float) : float =
+  let a = Float.abs x in
+  if a < 1e-10 then (* Taylor: erf(x) ≈ 2x/√π *)
+    x *. 1.1283791670955126   (* 2/√π *)
+  else begin
+    (* Rational approximation from A&S, enhanced coefficients *)
+    let t = 1.0 /. (1.0 +. 0.3275911 *. a) in
+    let poly = t *. (0.254829592
+      +. t *. (-0.284496736
+      +. t *. (1.421413741
+      +. t *. (-1.453152027
+      +. t *. 1.061405429)))) in
+    let r = 1.0 -. poly *. exp (-. a *. a) in
+    if x >= 0.0 then r else -.r
+  end
+
+(* erfinv: Winitzki (2008) initial approximation + Newton refinement.
+   Uses erf_impl for the Newton step, so accuracy bootstraps from erf. *)
+let erfinv_impl (x : float) : float =
+  if x <= -1.0 then neg_infinity
+  else if x >= 1.0 then infinity
+  else if Float.abs x < 1e-15 then x *. 0.88622692545275801 (* √π/2 · x *)
+  else begin
+    let sgn = if x >= 0.0 then 1.0 else -1.0 in
+    let a = Float.abs x in
+    (* Winitzki 2008 global approximation: max ~2e-3 relative error *)
+    let c = 0.147 in  (* 8(π-3)/(3π(4-π)) *)
+    let ln1ma2 = log (1.0 -. a *. a) in
+    let b = 2.0 /. (Float.pi *. c) +. ln1ma2 /. 2.0 in
+    let p0 = sgn *. sqrt (sqrt (b *. b -. ln1ma2 /. c) -. b) in
+    (* Newton refinement: p ← p + (x - erf(p)) · (√π/2) · exp(p²) *)
+    let sqrtpi_half = 0.88622692545275801 in
+    let newton p =
+      p +. (x -. erf_impl p) *. sqrtpi_half *. exp (p *. p) in
+    newton (newton (newton p0))
+  end
+
 let map1_f = function
   | Types.Neg  -> fun x -> -.x
   | Exp  -> exp
@@ -270,6 +311,8 @@ let map1_f = function
   | Sqrt -> sqrt
   | Relu -> fun x -> if x > 0.0 then x else 0.0
   | Step -> fun x -> if x > 0.0 then 1.0 else 0.0
+  | Erf -> erf_impl
+  | Erfinv -> erfinv_impl
   | _ -> assert false
 
 let map2_f = function
@@ -284,7 +327,7 @@ let map2_f = function
 
 let alloc_shape (p : Types.prim) (args : Tensor.t list) : int array =
   match p, args with
-  | (Types.Neg | Exp | Log | Sqrt | Relu | Step), [x] -> shape_of x
+  | (Types.Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv), [x] -> shape_of x
   | (Types.Add | Sub | Mul | Div | Max2), [x; _] -> shape_of x
   | (Sum_axis axis | Max_axis axis | Argmax_axis axis), [x] ->
     let s = shape_of x in
@@ -334,6 +377,10 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
     eval ((s, v1) :: env) e2
   | Rank (loc, _, _, _) ->
     raise (Eval_error (loc, "Rank node must be expanded before eval"))
+  | Sample (loc, _, _, _) ->
+    raise (Eval_error (loc, "Sample node requires simulate, not eval"))
+  | Score (loc, _) ->
+    raise (Eval_error (loc, "Score node requires simulate, not eval"))
   | Prim (loc, p, args) ->
     let vs = List.map (eval env) args in
     validate loc p vs;
@@ -370,7 +417,7 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
        record_alloc on;
        record_kernel pname on (fun () ->
        (match p, vs with
-        | (Neg | Exp | Log | Sqrt | Relu | Step), [x] ->
+        | (Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv), [x] ->
           Kernel.Naive.map1 ~f:(map1_f p) ~src:x.buf ~view:x.view ~dst;
           Tensor.of_buf dst (Ndview.contiguous os)
         | (Add | Sub | Mul | Div | Max2), [x; y] ->

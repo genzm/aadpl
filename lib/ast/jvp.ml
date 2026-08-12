@@ -42,6 +42,10 @@ let rec jvp_eval (env : dual_env) (e : Types.expr) : dual =
     jvp_eval ((s, d1) :: env) e2
   | Rank (loc, _, _, _) ->
     raise (Eval.Eval_error (loc, "Rank node must be expanded before jvp_eval"))
+  | Sample (loc, _, _, _) ->
+    raise (Eval.Eval_error (loc, "Sample node requires simulate, not jvp_eval"))
+  | Score (loc, _) ->
+    raise (Eval.Eval_error (loc, "Score node requires simulate, not jvp_eval"))
   | Prim (loc, p, args) ->
     let ds = List.map (jvp_eval env) args in
     let vs = List.map fst ds in
@@ -113,6 +117,33 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
     (* step is piecewise constant — tangent is zero *)
     (Tensor.of_buf dst_p (Ndview.contiguous os),
      zeros_like x)
+
+  | Erf, [(x, dx)] ->
+    let os = shape_of x in
+    let on = Array.fold_left ( * ) 1 os in
+    let dst_p = Buf.create on in
+    Kernel.Naive.map1 ~f:Eval.erf_impl ~src:x.buf ~view:x.view ~dst:dst_p;
+    (* erf'(x) = (2/√π) exp(-x²) *)
+    let two_over_sqrtpi = 1.1283791670955126 in
+    let dst_d = Buf.create on in
+    Kernel.Naive.map1 ~f:(fun v -> two_over_sqrtpi *. exp (-. v *. v))
+      ~src:x.buf ~view:x.view ~dst:dst_d;
+    let deriv = Tensor.of_buf dst_d (Ndview.contiguous os) in
+    (Tensor.of_buf dst_p (Ndview.contiguous os), t_mul deriv dx)
+
+  | Erfinv, [(x, dx)] ->
+    let os = shape_of x in
+    let on = Array.fold_left ( * ) 1 os in
+    let dst_p = Buf.create on in
+    Kernel.Naive.map1 ~f:Eval.erfinv_impl ~src:x.buf ~view:x.view ~dst:dst_p;
+    let primal = Tensor.of_buf dst_p (Ndview.contiguous os) in
+    (* erfinv'(x) = (√π/2) exp(erfinv(x)²) *)
+    let sqrtpi_over_2 = 0.88622692545275801 in
+    let dst_d = Buf.create on in
+    Kernel.Naive.map1 ~f:(fun v -> sqrtpi_over_2 *. exp (v *. v))
+      ~src:primal.buf ~view:primal.view ~dst:dst_d;
+    let deriv = Tensor.of_buf dst_d (Ndview.contiguous os) in
+    (primal, t_mul deriv dx)
 
   (* --- map2 --- *)
   | Add, [(_, dx); (_, dy)] ->
