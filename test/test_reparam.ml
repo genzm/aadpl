@@ -201,6 +201,92 @@ let test_assess_expr_with_score () =
   let ld_sym = Ast.Eval.eval env ld_expr in
   check (float 1e-12) "score assess_expr" (scalar_val ld_val) (scalar_val ld_sym)
 
+(* ── discrete seed prohibition ── *)
+
+(* Simple substring check without Str dependency *)
+let contains s sub =
+  let len_s = String.length s and len_sub = String.length sub in
+  if len_sub > len_s then false
+  else
+    let rec check i =
+      if i > len_s - len_sub then false
+      else if String.sub s i len_sub = sub then true
+      else check (i + 1)
+    in check 0
+
+let test_discrete_in_grad () =
+  (* D_categorical Sample passed directly to grad → Grad_error with loc *)
+  let w = View.Tensor.make [|3|] in
+  View.Buf.set w.buf 0 1.0; View.Buf.set w.buf 1 2.0; View.Buf.set w.buf 2 3.0;
+  let e = let_ "k" (sample "k" [||] (D_categorical (const w))) (var "k") in
+  let raised = ref false in
+  (try
+     let _ = Transform.grad ~param_shapes:[] e in ()
+   with Transform.Grad_error (_, msg) ->
+     raised := true;
+     check bool "mentions discrete" true (contains msg "discrete");
+     check bool "mentions site name" true (contains msg "'k'"));
+  check bool "Grad_error raised" true !raised
+
+let test_continuous_sample_in_grad () =
+  (* Unreparammed continuous Sample → Grad_error mentioning reparam *)
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let e = let_ "z" (sample "z" [||] dist) (var "z") in
+  let raised = ref false in
+  (try
+     let _ = Transform.grad ~param_shapes:[("mu", [||]); ("sigma", [||])] e in ()
+   with Transform.Grad_error (_, msg) ->
+     raised := true;
+     check bool "mentions reparam" true (contains msg "reparam"));
+  check bool "Grad_error raised" true !raised
+
+let test_score_in_grad () =
+  (* Score passed to grad → Grad_error mentioning assess_expr *)
+  let e = let_ "_s" (score (var "x")) (var "x") in
+  let raised = ref false in
+  (try
+     let _ = Transform.grad ~param_shapes:[("x", [||])] e in ()
+   with Transform.Grad_error (_, msg) ->
+     raised := true;
+     check bool "mentions assess_expr" true (contains msg "assess_expr"));
+  check bool "Grad_error raised" true !raised
+
+(* ── trace compatibility ── *)
+
+let test_trace_compat_ok () =
+  (* Matching sites → no exception *)
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let model = let_ "z" (sample "z" [|10|] dist) (var "z") in
+  let guide = let_ "z" (sample "z" [|10|] dist) (var "z") in
+  check pass "no exception"
+    () (Transform.Reparam.check_trace_compat ~model ~guide)
+
+let test_trace_compat_missing_site () =
+  (* Guide has site not in model → Trace_mismatch *)
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let model = let_ "z" (sample "z" [||] dist) (var "z") in
+  let guide = let_ "w" (sample "w" [||] dist) (var "w") in
+  let raised = ref false in
+  (try
+     Transform.Reparam.check_trace_compat ~model ~guide
+   with Transform.Reparam.Trace_mismatch msg ->
+     raised := true;
+     check bool "mentions site" true (contains msg "'w'"));
+  check bool "Trace_mismatch raised" true !raised
+
+let test_trace_compat_frame_mismatch () =
+  (* Same site name, different frames → Trace_mismatch *)
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let model = let_ "z" (sample "z" [|10|] dist) (var "z") in
+  let guide = let_ "z" (sample "z" [|5|] dist) (var "z") in
+  let raised = ref false in
+  (try
+     Transform.Reparam.check_trace_compat ~model ~guide
+   with Transform.Reparam.Trace_mismatch msg ->
+     raised := true;
+     check bool "mentions frame mismatch" true (contains msg "frame mismatch"));
+  check bool "Trace_mismatch raised" true !raised
+
 (* ── Test suite ── *)
 
 let () =
@@ -226,5 +312,15 @@ let () =
       test_case "scalar"          `Quick test_assess_expr_scalar;
       test_case "frame"           `Quick test_assess_expr_frame;
       test_case "with score"      `Quick test_assess_expr_with_score;
+    ];
+    "discrete_guard", [
+      test_case "categorical"     `Quick test_discrete_in_grad;
+      test_case "continuous"      `Quick test_continuous_sample_in_grad;
+      test_case "score"           `Quick test_score_in_grad;
+    ];
+    "trace_compat", [
+      test_case "matching"        `Quick test_trace_compat_ok;
+      test_case "missing site"    `Quick test_trace_compat_missing_site;
+      test_case "frame mismatch"  `Quick test_trace_compat_frame_mismatch;
     ];
   ]

@@ -8,6 +8,30 @@ module Assess_expr = Assess_expr
 
 open Ast.Types
 
+(* --- discrete sample guard --- *)
+
+exception Grad_error of loc * string
+
+let check_no_samples (e : expr) =
+  let rec walk = function
+    | Sample (l, name, _, dist) ->
+      (match dist with
+       | D_categorical _ ->
+         raise (Grad_error (l,
+           Printf.sprintf "discrete sample '%s' in differentiable path" name))
+       | _ ->
+         raise (Grad_error (l,
+           Printf.sprintf "sample '%s' must be handled by reparam/assess_expr before grad" name)))
+    | Score (l, _) ->
+      raise (Grad_error (l,
+        "Score must be handled by assess_expr before grad"))
+    | Const _ | Var _ -> ()
+    | Prim (_, _, args) -> List.iter walk args
+    | Let (_, _, e1, e2) -> walk e1; walk e2
+    | Rank (_, _, _, args) -> List.iter walk args
+  in
+  walk e
+
 type grad_program = {
   loss : expr;
   grads : (string * expr) list;
@@ -19,6 +43,7 @@ type grad_program = {
 
 let grad ~(param_shapes : (string * int array) list)
     ?(data_shapes : (string * int array) list = []) (e : expr) : grad_program =
+  check_no_samples e;
   let all_shapes = param_shapes @ data_shapes in
   let e = Expand_rank.expand ~senv:all_shapes e in
   let e = Desugar.fuse_views e in

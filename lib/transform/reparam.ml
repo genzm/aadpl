@@ -91,3 +91,47 @@ and dist_is_primitive = function
   | D_uniform | D_categorical _ -> true
   | D_pushforward _ -> false
   | D_product (a, b) -> dist_is_primitive a && dist_is_primitive b
+
+(* --- collect_sites: gather (name, frame) pairs from Sample nodes --- *)
+
+let collect_sites (e : expr) : (string * int array) list =
+  let acc = ref [] in
+  let rec walk = function
+    | Sample (_, name, frame, dist) ->
+      acc := (name, frame) :: !acc;
+      walk_dist dist
+    | Score (_, e) -> walk e
+    | Const _ | Var _ -> ()
+    | Prim (_, _, args) -> List.iter walk args
+    | Let (_, _, e1, e2) -> walk e1; walk e2
+    | Rank (_, _, _, args) -> List.iter walk args
+  and walk_dist = function
+    | D_uniform -> ()
+    | D_categorical e -> walk e
+    | D_pushforward { fwd; inv; base; _ } -> walk fwd; walk inv; walk_dist base
+    | D_product (a, b) -> walk_dist a; walk_dist b
+  in
+  walk e;
+  List.rev !acc
+
+(* --- check_trace_compat: verify model and guide have matching sites --- *)
+
+exception Trace_mismatch of string
+
+let check_trace_compat ~model ~guide =
+  let model_sites = collect_sites model in
+  let guide_sites = collect_sites guide in
+  (* Check guide sites are a subset of model sites with matching frames *)
+  List.iter (fun (name, g_frame) ->
+    match List.assoc_opt name model_sites with
+    | None ->
+      raise (Trace_mismatch
+        (Printf.sprintf "guide site '%s' not found in model" name))
+    | Some m_frame ->
+      if m_frame <> g_frame then
+        raise (Trace_mismatch
+          (Printf.sprintf "site '%s' frame mismatch: model=[%s] guide=[%s]"
+             name
+             (String.concat "," (List.map string_of_int (Array.to_list m_frame)))
+             (String.concat "," (List.map string_of_int (Array.to_list g_frame)))))
+  ) guide_sites
