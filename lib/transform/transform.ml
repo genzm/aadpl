@@ -4,6 +4,7 @@ module Forward = Forward
 module Unzip = Unzip
 module Transpose = Transpose
 module Reparam = Reparam
+module Assess_expr = Assess_expr
 
 open Ast.Types
 

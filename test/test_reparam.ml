@@ -144,6 +144,63 @@ let test_reparam_categorical_unchanged () =
    | Sample (_, "k", _, D_categorical _) -> check pass "unchanged" () ()
    | _ -> fail "expected Sample with D_categorical")
 
+(* ── assess_expr: symbolic density matches value-level assess ── *)
+
+let test_assess_expr_scalar () =
+  let mu = mk_scalar 1.0 in
+  let sigma = mk_scalar 2.0 in
+  let env = [("mu", mu); ("sigma", sigma)] in
+  let env_shapes = [("mu", [||]); ("sigma", [||])] in
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let e = sample "z" [||] dist in
+  (* Get z value from simulate *)
+  let (_, trace, _) = Ast.Simulate.simulate ~run_key:42L env e in
+  let z = List.assoc "z" trace in
+  (* Value-level assess *)
+  let (_, ld_val) = Ast.Assess.assess env e [("z", z)] in
+  (* Expression-level assess *)
+  let slots = [("z", const z)] in
+  let ld_expr = Transform.Assess_expr.assess_expr ~env_shapes e slots in
+  let ld_sym = Ast.Eval.eval env ld_expr in
+  check (float 1e-12) "scalar assess_expr" (scalar_val ld_val) (scalar_val ld_sym)
+
+let test_assess_expr_frame () =
+  let mu = mk_scalar 0.0 in
+  let sigma = mk_scalar 1.0 in
+  let env = [("mu", mu); ("sigma", sigma)] in
+  let env_shapes = [("mu", [||]); ("sigma", [||])] in
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let g = 10 in
+  let e = sample "z" [|g|] dist in
+  (* Get z value from simulate *)
+  let (_, trace, _) = Ast.Simulate.simulate ~run_key:77L env e in
+  let z = List.assoc "z" trace in
+  (* Value-level assess *)
+  let (_, ld_val) = Ast.Assess.assess env e [("z", z)] in
+  (* Expression-level assess *)
+  let slots = [("z", const z)] in
+  let ld_expr = Transform.Assess_expr.assess_expr ~env_shapes e slots in
+  let ld_sym = Ast.Eval.eval env ld_expr in
+  check (float 1e-12) "frame assess_expr" (scalar_val ld_val) (scalar_val ld_sym)
+
+let test_assess_expr_with_score () =
+  (* model: let z = Sample(Normal) in Score(z); z *)
+  let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let e = let_ "z" (sample "z" [||] dist) (let_ "_s" (score (var "z")) (var "z")) in
+  let mu = mk_scalar 0.0 in
+  let sigma = mk_scalar 1.0 in
+  let env = [("mu", mu); ("sigma", sigma)] in
+  let env_shapes = [("mu", [||]); ("sigma", [||])] in
+  let (_, trace, _) = Ast.Simulate.simulate ~run_key:99L env e in
+  let z = List.assoc "z" trace in
+  (* Value-level assess *)
+  let (_, ld_val) = Ast.Assess.assess env e [("z", z)] in
+  (* Expression-level assess *)
+  let slots = [("z", const z)] in
+  let ld_expr = Transform.Assess_expr.assess_expr ~env_shapes e slots in
+  let ld_sym = Ast.Eval.eval env ld_expr in
+  check (float 1e-12) "score assess_expr" (scalar_val ld_val) (scalar_val ld_sym)
+
 (* ── Test suite ── *)
 
 let () =
@@ -164,5 +221,10 @@ let () =
     "consistency", [
       test_case "density"         `Quick test_density_consistency;
       test_case "return value"    `Quick test_reparam_return_value;
+    ];
+    "assess_expr", [
+      test_case "scalar"          `Quick test_assess_expr_scalar;
+      test_case "frame"           `Quick test_assess_expr_frame;
+      test_case "with score"      `Quick test_assess_expr_with_score;
     ];
   ]

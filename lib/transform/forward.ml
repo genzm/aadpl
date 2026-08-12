@@ -10,13 +10,21 @@ type bindings = (string * expr) list
 (* --- gensym --- *)
 
 let counter = ref 0
+let ns = ref ""
 
 let gensym prefix =
   let n = !counter in
   incr counter;
-  Printf.sprintf "%%%s%d" prefix n
+  Printf.sprintf "%%%s%s%d" !ns prefix n
 
 let reset_gensym () = counter := 0
+
+let with_ns new_ns f =
+  let old = !ns in
+  ns := new_ns;
+  let result = f () in
+  ns := old;
+  result
 
 (* tangent variable for user variable s *)
 let tangent_name s = "%" ^ s ^ ".t"
