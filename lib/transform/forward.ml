@@ -94,6 +94,7 @@ and forward_prim (p : prim) (fwd_args : (bindings * expr * expr) list) :
         prim Mul [ prim Exp [ prim Logsigmoid [ prim Neg [ v ] ] ]; tx ] )
   | Log_unit_density, [ (bs, px, tx) ] ->
       let bs_v, v = ensure_var "p" px in
+      (* tx - tx is the shape-polymorphic zero available in the current IR. *)
       (bs @ bs_v, prim Log_unit_density [v], prim Sub [tx; tx])
   | Sqrt, [ (bs, px, tx) ] ->
       (* residual: sqrt(x); tangent = tx / (sqrt(x) + sqrt(x)) *)

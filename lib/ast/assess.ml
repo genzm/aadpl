@@ -50,9 +50,10 @@ let rec log_density (dist : Types.dist) (x : Tensor.t)
     (env : Eval.env) : float =
   match dist with
   | D_uniform ->
-    (* Uniform on (0,1): density = 1, log density = 0 *)
+    (* Endpoints are an equivalent density version and absorb CDF roundoff in
+       pushforwards.  A directly traced Uniform is still checked against (0,1). *)
     let v = scalar_val x in
-    if v > 0.0 && v < 1.0 then 0.0 else neg_infinity
+    if v >= 0.0 && v <= 1.0 then 0.0 else neg_infinity
 
   | D_categorical weights_expr ->
     let weights = Eval.eval env weights_expr in

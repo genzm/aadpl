@@ -18,6 +18,11 @@ let tensor shape values =
 let value t i = View.Buf.get t.View.Tensor.buf i
 let numel t = View.Ndview.numel t.View.Tensor.view
 
+let filled shape x =
+  let t = View.Tensor.make shape in
+  for i = 0 to numel t - 1 do View.Buf.set t.buf i x done;
+  t
+
 let test_half_normal_inverse () =
   let dist = Ast.Half_normal.half_normal ~sigma:"sigma" in
   match dist with
@@ -85,8 +90,20 @@ let test_support_runtime () =
   let symbolic = Transform.Assess_expr.assess_expr
     ~env_shapes:[("sigma", [||])] program [("tau", const (scalar (-0.5)))] in
   check_raises "assess_expr rejects value outside base support"
-    (Ast.Eval.Eval_error (loc, "value outside Uniform support (0,1)"))
-    (fun () -> ignore (Ast.Eval.eval [("sigma", scalar 1.0)] symbolic))
+    (Ast.Eval.Eval_error
+       (loc, "value outside Uniform density domain [0,1]"))
+    (fun () -> ignore (Ast.Eval.eval [("sigma", scalar 1.0)] symbolic));
+  let normal = Sample (loc, "x", [||],
+    Ast.Normal.normal ~mu:"mu" ~sigma:"sigma") in
+  let env = [("mu", scalar 0.0); ("sigma", scalar 1.0)] in
+  let _, tail_ld = Ast.Assess.assess env normal [("x", scalar 12.0)] in
+  let tail_expr = Transform.Assess_expr.assess_expr
+    ~env_shapes:[("mu", [||]); ("sigma", [||])] normal
+    [("x", const (scalar 12.0))] |> Ast.Eval.eval env in
+  check bool "far Normal tail remains finite (value)" true
+    (Float.is_finite (value tail_ld 0));
+  check bool "far Normal tail remains finite (expr)" true
+    (Float.is_finite (value tail_expr 0))
 
 let test_support_declarations () =
   let distributions =
@@ -112,14 +129,22 @@ let test_support_declarations () =
 
 let test_support_partial_order () =
   let supports =
-    [S_real; S_positive; S_unit_interval; S_finite;
+    [S_real; S_positive; S_unit_interval; S_finite 2;
      S_product (S_positive, S_real)] in
   List.iter (fun a ->
     check bool "support reflexive" true (Ast.Sites.support_subset a a)) supports;
   List.iter (fun a -> List.iter (fun b -> List.iter (fun c ->
     if Ast.Sites.support_subset a b && Ast.Sites.support_subset b c then
       check bool "support transitive" true (Ast.Sites.support_subset a c))
-    supports) supports) supports
+    supports) supports) supports;
+  check bool "finite lower bound" false
+    (Ast.Sites.support_contains (S_finite 2) (-1.0));
+  check bool "finite upper bound" false
+    (Ast.Sites.support_contains (S_finite 2) 2.0);
+  check_raises "product containment is not implemented"
+    (Failure "support_contains: D_product not supported (Phase 13)")
+    (fun () -> ignore (Ast.Sites.support_contains
+      (S_product (S_real, S_real)) 0.0))
 
 let hierarchical_program group_count =
   let model =
@@ -276,6 +301,203 @@ let observed_program group_count =
     (Ast.Normal.normal ~mu:"q_mu" ~sigma:"q_scale") in
   model, guide
 
+let observed_vi_program frame =
+  let model =
+    let_ "z"
+      (sample "z" frame
+         (Ast.Normal.normal ~mu:"prior_mu" ~sigma:"prior_scale"))
+      (sample "y" frame (Ast.Normal.normal ~mu:"z" ~sigma:"obs_scale"))
+  in
+  let guide =
+    let_ "q_scale" (prim Exp [var "q_rho"])
+      (sample "z" frame (Ast.Normal.normal ~mu:"q_mu" ~sigma:"q_scale"))
+  in
+  model, guide
+
+let gaussian_log_density ~x ~mu ~sigma =
+  let d = (x -. mu) /. sigma in
+  -.0.5 *. log (2.0 *. Float.pi) -. log sigma -. 0.5 *. d *. d
+
+let test_observed_optimal_elbo () =
+  let group_count = 5 and obs_scale = 0.6 in
+  let frame = [|group_count|] in
+  let model, guide = observed_vi_program frame in
+  let y_values = [|-1.2; -0.3; 0.1; 0.8; 1.7|] in
+  let posterior_variance = obs_scale *. obs_scale /. (1.0 +. obs_scale *. obs_scale) in
+  let posterior_scale = sqrt posterior_variance in
+  let posterior_means = Array.map (fun y -> y /. (1.0 +. obs_scale *. obs_scale)) y_values in
+  let shapes = [
+    ("prior_mu", [||]); ("prior_scale", [||]); ("obs_scale", [||]);
+    ("q_mu", frame); ("q_rho", frame); ("y_obs", frame);
+  ] in
+  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+    ~model ~guide ~env_shapes:shapes in
+  let env = Transform.noise_env program ~run_key:140L @ [
+    ("prior_mu", scalar 0.0); ("prior_scale", scalar 1.0);
+    ("obs_scale", scalar obs_scale); ("q_mu", tensor frame posterior_means);
+    ("q_rho", filled frame (log posterior_scale));
+    ("y_obs", tensor frame y_values);
+  ] in
+  let actual = Ast.Eval.eval env program.elbo |> fun t -> value t 0 in
+  let marginal_scale = sqrt (1.0 +. obs_scale *. obs_scale) in
+  let expected = Array.fold_left (fun total y ->
+    total +. gaussian_log_density ~x:y ~mu:0.0 ~sigma:marginal_scale)
+    0.0 y_values in
+  check (float 1e-10) "observed optimal ELBO" expected actual
+
+let rank_histogram draws truth =
+  let repetitions = numel truth in
+  let histogram = Array.make (List.length draws + 1) 0 in
+  for i = 0 to repetitions - 1 do
+    let rank = List.fold_left
+      (fun rank draw -> if value draw i < value truth i then rank + 1 else rank)
+      0 draws in
+    histogram.(rank) <- histogram.(rank) + 1
+  done;
+  histogram
+
+let check_uniform_ranks label histogram =
+  let total = Array.fold_left ( + ) 0 histogram in
+  let expected = float_of_int total /. float_of_int (Array.length histogram) in
+  let chi_square = Array.fold_left (fun sum count ->
+    let d = float_of_int count -. expected in sum +. d *. d /. expected)
+    0.0 histogram in
+  (* Fixed Threefry streams make this deterministic.  The cutoff is above the
+     99.9% chi-square quantile for 15 degrees of freedom. *)
+  check bool (Printf.sprintf "%s ranks (chi-square %.3f)" label chi_square)
+    true (chi_square < 38.0)
+
+let posterior_parameters obs_scale y =
+  let denominator = 1.0 +. obs_scale *. obs_scale in
+  Array.map (fun x -> x /. denominator) y,
+  obs_scale /. sqrt denominator
+
+let extract_trace name trace = List.assoc name trace
+
+let test_sbc_closed_form () =
+  let repetitions = 2048 and posterior_draws = 15 and obs_scale = 0.7 in
+  let frame = [|repetitions|] in
+  let model, guide = observed_vi_program frame in
+  let shapes = [
+    ("prior_mu", [||]); ("prior_scale", [||]); ("obs_scale", [||]);
+    ("q_mu", frame); ("q_rho", frame);
+  ] in
+  let fixed = [("prior_mu", scalar 0.0); ("prior_scale", scalar 1.0);
+               ("obs_scale", scalar obs_scale)] in
+  let model = Transform.Expand_rank.expand ~senv:shapes model in
+  let _, generated, _ = Ast.Simulate.simulate ~run_key:150L fixed model in
+  let z_true = extract_trace "z" generated and y = extract_trace "y" generated in
+  let y_values = Array.init repetitions (value y) in
+  let q_mu, q_scale = posterior_parameters obs_scale y_values in
+  let guide_env = ("q_mu", tensor frame q_mu)
+    :: ("q_rho", filled frame (log q_scale)) :: fixed in
+  let guide = Transform.Expand_rank.expand ~senv:shapes guide in
+  let draws = List.init posterior_draws (fun draw ->
+    let _, trace, _ = Ast.Simulate.simulate
+      ~run_key:(Int64.of_int (10_000 + draw)) guide_env guide in
+    extract_trace "z" trace) in
+  check_uniform_ranks "closed posterior z" (rank_histogram draws z_true);
+  let joint z i =
+    gaussian_log_density ~x:(value z i) ~mu:0.0 ~sigma:1.0
+    +. gaussian_log_density ~x:(value y i) ~mu:(value z i) ~sigma:obs_scale in
+  let true_joint = tensor frame (Array.init repetitions (joint z_true)) in
+  let draw_joints = List.map (fun z ->
+    tensor frame (Array.init repetitions (joint z))) draws in
+  check_uniform_ranks "closed posterior log joint"
+    (rank_histogram draw_joints true_joint)
+
+type tensor_adam = { m : View.Tensor.t; v : View.Tensor.t }
+
+let adam_tensor_ascent ~step ~learning_rate state parameter gradient =
+  let beta1 = 0.9 and beta2 = 0.999 and epsilon = 1e-8 in
+  let c1 = 1.0 -. beta1 ** float_of_int step in
+  let c2 = 1.0 -. beta2 ** float_of_int step in
+  for i = 0 to numel parameter - 1 do
+    let g = value gradient i in
+    let m = beta1 *. value state.m i +. (1.0 -. beta1) *. g in
+    let v = beta2 *. value state.v i +. (1.0 -. beta2) *. g *. g in
+    View.Buf.set state.m.buf i m;
+    View.Buf.set state.v.buf i v;
+    View.Buf.set parameter.buf i
+      (value parameter i +. learning_rate *. (m /. c1)
+       /. (sqrt (v /. c2) +. epsilon))
+  done
+
+let test_sbc_language_vi () =
+  let repetitions = 512 and groups = 3 and posterior_draws = 15 in
+  let obs_scale = 0.7 and frame = [|repetitions; groups|] in
+  let model, guide = observed_vi_program frame in
+  let shapes = [
+    ("prior_mu", [||]); ("prior_scale", [||]); ("obs_scale", [||]);
+    ("q_mu", frame); ("q_rho", frame); ("y_obs", frame);
+  ] in
+  let fixed = [("prior_mu", scalar 0.0); ("prior_scale", scalar 1.0);
+               ("obs_scale", scalar obs_scale)] in
+  let expanded_model = Transform.Expand_rank.expand ~senv:shapes model in
+  let _, generated, _ = Ast.Simulate.simulate ~run_key:160L fixed expanded_model in
+  let z_true = extract_trace "z" generated and y = extract_trace "y" generated in
+  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+    ~model ~guide ~env_shapes:shapes in
+  let gp = Transform.grad ~param_shapes:[("q_mu", frame); ("q_rho", frame)]
+    ~data_shapes:(program.noise @ [("prior_mu", [||]); ("prior_scale", [||]);
+      ("obs_scale", [||]); ("y_obs", frame)]) program.elbo in
+  let q_mu = filled frame 0.0 and q_rho = filled frame 0.0 in
+  let mu_adam = {m = filled frame 0.0; v = filled frame 0.0}
+  and rho_adam = {m = filled frame 0.0; v = filled frame 0.0} in
+  for step = 1 to 1500 do
+    let env = Transform.noise_env program ~run_key:(Int64.of_int (20_000 + step))
+      @ [("q_mu", q_mu); ("q_rho", q_rho); ("y_obs", y)] @ fixed in
+    let _, gradients = Ast.Eval.eval_grad env
+      ~primal_bindings:gp.primal_bindings ~loss_body:gp.loss_body
+      ~grad_bindings:gp.grad_bindings ~grad_bodies:gp.grad_bodies in
+    let learning_rate = if step <= 500 then 0.01 else 0.002 in
+    adam_tensor_ascent ~step ~learning_rate mu_adam q_mu
+      (List.assoc "q_mu" gradients);
+    adam_tensor_ascent ~step ~learning_rate rho_adam q_rho
+      (List.assoc "q_rho" gradients)
+  done;
+  let exact_mu, exact_scale = posterior_parameters obs_scale
+    (Array.init (numel y) (value y)) in
+  let mean_mu_error = ref 0.0 and mean_scale_error = ref 0.0 in
+  for i = 0 to numel q_mu - 1 do
+    mean_mu_error := !mean_mu_error +. Float.abs (value q_mu i -. exact_mu.(i));
+    mean_scale_error := !mean_scale_error
+      +. Float.abs (exp (value q_rho i) -. exact_scale)
+  done;
+  mean_mu_error := !mean_mu_error /. float_of_int (numel q_mu);
+  mean_scale_error := !mean_scale_error /. float_of_int (numel q_rho);
+  Printf.printf "\nSBC 1b VI mean errors: mu=%.6f scale=%.6f\n"
+    !mean_mu_error !mean_scale_error;
+  check bool "VI posterior mean converged" true (!mean_mu_error < 0.03);
+  check bool "VI posterior scale converged" true (!mean_scale_error < 0.03);
+  let expanded_guide = Transform.Expand_rank.expand ~senv:shapes guide in
+  let posterior_env = [("q_mu", q_mu); ("q_rho", q_rho)] @ fixed in
+  let draws = List.init posterior_draws (fun draw ->
+    let _, trace, _ = Ast.Simulate.simulate
+      ~run_key:(Int64.of_int (30_000 + draw)) posterior_env expanded_guide in
+    extract_trace "z" trace) in
+  for group = 0 to groups - 1 do
+    let select t = tensor [|repetitions|]
+      (Array.init repetitions (fun repetition ->
+        value t (repetition * groups + group))) in
+    check_uniform_ranks (Printf.sprintf "VI z[%d]" group)
+      (rank_histogram (List.map select draws) (select z_true))
+  done;
+  let joint_per_repetition z = tensor [|repetitions|]
+    (Array.init repetitions (fun repetition ->
+      let total = ref 0.0 in
+      for group = 0 to groups - 1 do
+        let i = repetition * groups + group in
+        total := !total
+          +. gaussian_log_density ~x:(value z i) ~mu:0.0 ~sigma:1.0
+          +. gaussian_log_density ~x:(value y i) ~mu:(value z i)
+               ~sigma:obs_scale
+      done;
+      !total)) in
+  check_uniform_ranks "VI log joint"
+    (rank_histogram (List.map joint_per_repetition draws)
+       (joint_per_repetition z_true))
+
 let test_observed_site () =
   let model, guide = observed_program 3 in
   let shapes =
@@ -363,5 +585,11 @@ let () =
           test_case "latent observed partition" `Quick
             test_observed_partition_errors;
           test_case "continuous only" `Quick test_discrete_observed_rejected;
+        ] );
+      ( "12-4 SBC implementation invariants",
+        [
+          test_case "observed optimal ELBO" `Quick test_observed_optimal_elbo;
+          test_case "1a closed posterior ranks" `Slow test_sbc_closed_form;
+          test_case "1b language VI ranks" `Slow test_sbc_language_vi;
         ] );
     ]

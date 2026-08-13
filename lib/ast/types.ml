@@ -55,7 +55,7 @@ and support =
   | S_real
   | S_positive
   | S_unit_interval
-  | S_finite
+  | S_finite of int
   | S_product of support * support
 
 and dist =

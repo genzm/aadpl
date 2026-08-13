@@ -25,7 +25,13 @@ let rec dist_kind = function
 
 let rec dist_support = function
   | D_uniform -> S_unit_interval
-  | D_categorical _ -> S_finite
+  | D_categorical (Const (_, weights)) ->
+      let shape = weights.View.Tensor.view.View.Ndview.shape in
+      if Array.length shape <> 1 then
+        failwith "dist_support: categorical weights must have rank 1";
+      S_finite shape.(0)
+  | D_categorical _ ->
+      failwith "dist_support: categorical size must be statically known"
   | D_pushforward { support; _ } -> support
   | D_product (a, b) -> S_product (dist_support a, dist_support b)
 
@@ -34,6 +40,7 @@ let rec support_subset left right =
   || match left, right with
      | (S_unit_interval | S_positive), S_real -> true
      | S_unit_interval, S_positive -> true
+     | S_finite n, S_finite m -> n <= m
      | S_product (la, lb), S_product (ra, rb) ->
          support_subset la ra && support_subset lb rb
      | _ -> false
@@ -43,8 +50,11 @@ let support_contains support value =
   | S_real -> Float.is_finite value
   | S_positive -> Float.is_finite value && value > 0.0
   | S_unit_interval -> value > 0.0 && value < 1.0
-  | S_finite -> Float.is_finite value && value = Float.round value
-  | S_product _ -> false
+  | S_finite n ->
+      Float.is_finite value && value = Float.round value
+      && value >= 0.0 && value < float_of_int n
+  | S_product _ ->
+      failwith "support_contains: D_product not supported (Phase 13)"
 
 (* The sole definition of static site traversal and numbering. *)
 let collect_sites (e : expr) : site list =

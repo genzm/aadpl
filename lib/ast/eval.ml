@@ -202,8 +202,8 @@ let validate loc (p : Types.prim) (args : Tensor.t list) =
   | Types.Log_unit_density, [x] ->
     Ndview.iter_indices x.view.Ndview.shape (fun _ index ->
       let value = Buf.get x.buf (Ndview.index_of x.view index) in
-      if value <= 0.0 || value >= 1.0 then
-        raise (Eval_error (loc, "value outside Uniform support (0,1)"))
+      if value < 0.0 || value > 1.0 then
+        raise (Eval_error (loc, "value outside Uniform density domain [0,1]"))
     )
   | (Types.Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv), [_] -> ()
   | (Types.Add | Sub | Mul | Div | Max2), [x; y] ->
