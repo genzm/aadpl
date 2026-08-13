@@ -173,7 +173,10 @@ let assess_expr ?(ns = "a.") ~(env_shapes : (string * int array) list)
         | Prim (l, _, args) ->
             assert_no_sample_in_args l args;
             mk_scalar 0.0
-        | Score (_, e) -> rewrite senv e
+        | Score (_, e) ->
+            let value = rewrite senv e in
+            let shape = Expand_rank.infer_shape senv value in
+            if shape = [||] then value else sum_frame shape value
         | Sample (_, name, frame, dist) -> density_of senv name frame dist
         | Rank _ -> failwith "assess_expr: Rank must be expanded first"
       and go_bind senv e =

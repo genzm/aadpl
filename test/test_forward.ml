@@ -70,6 +70,25 @@ let test_log () =
   let dx = tensor_of_list [|3|] [1.;0.5;(-0.3)] in
   check_forward "log" [("x", x, dx)] (prim Log [var "x"])
 
+let test_logsigmoid () =
+  let epsilon = 1e-5 in
+  List.iter
+    (fun value ->
+      let x = tensor_of_list [||] [value] in
+      let dx = tensor_of_list [||] [1.0] in
+      check_forward "logsigmoid" [("x", x, dx)]
+        (prim Logsigmoid [var "x"]);
+      let eval at =
+        tensor_get (Ast.Eval.eval [("x", tensor_of_list [||] [at])]
+          (prim Logsigmoid [var "x"])) 0
+      in
+      let fd = (eval (value +. epsilon) -. eval (value -. epsilon))
+               /. (2.0 *. epsilon) in
+      let _, tangent = Ast.Jvp.jvp_eval [("x", (x, dx))]
+        (prim Logsigmoid [var "x"]) in
+      Alcotest.(check (float 1e-8)) "logsigmoid FD" fd (tensor_get tangent 0))
+    [-30.0; 0.0; 30.0]
+
 let test_sqrt () =
   let x = tensor_of_list [|3|] [1.0;4.0;9.0] in
   let dx = tensor_of_list [|3|] [1.;(-0.5);2.] in
@@ -232,6 +251,7 @@ let () =
       test_case "neg" `Quick test_neg;
       test_case "exp" `Quick test_exp;
       test_case "log" `Quick test_log;
+      test_case "logsigmoid" `Quick test_logsigmoid;
       test_case "sqrt" `Quick test_sqrt;
       test_case "relu" `Quick test_relu;
       test_case "step" `Quick test_step;

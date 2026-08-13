@@ -82,6 +82,22 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
     (Tensor.of_buf dst_p (Ndview.contiguous os),
      t_map2 ( /. ) dx x)       (* log'(x) = 1/x *)
 
+  | Logsigmoid, [(x, dx)] ->
+    let os = shape_of x in
+    let on = Array.fold_left ( * ) 1 os in
+    let dst_p = Buf.create on in
+    Kernel.Naive.map1
+      ~f:(fun v ->
+        if v >= 0.0 then -.log1p (exp (-.v)) else v -. log1p (exp v))
+      ~src:x.buf ~view:x.view ~dst:dst_p;
+    let dst_d = Buf.create on in
+    Kernel.Naive.map1
+      ~f:(fun v -> if v >= 0.0 then exp (-.v) /. (1.0 +. exp (-.v))
+            else 1.0 /. (1.0 +. exp v))
+      ~src:x.buf ~view:x.view ~dst:dst_d;
+    (Tensor.of_buf dst_p (Ndview.contiguous os),
+     t_mul (Tensor.of_buf dst_d (Ndview.contiguous os)) dx)
+
   | Sqrt, [(x, dx)] ->
     let os = shape_of x in
     let on = Array.fold_left ( * ) 1 os in

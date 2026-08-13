@@ -227,6 +227,19 @@ let test_assess_expr_with_score () =
   check (float 1e-12) "score assess_expr" (scalar_val ld_val)
     (scalar_val ld_sym)
 
+let test_frame_score () =
+  let values = View.Tensor.make [|2; 2|] in
+  List.iteri (View.Buf.set values.buf) [1.0; 2.0; 3.0; 2.0];
+  let e = score (var "values") in
+  let env = [("values", values)] in
+  let _, _, simulated = Ast.Simulate.simulate ~run_key:0L env e in
+  let _, assessed = Ast.Assess.assess env e [] in
+  let symbolic = Transform.Assess_expr.assess_expr
+    ~env_shapes:[("values", [|2; 2|])] e [] |> Ast.Eval.eval env in
+  check (float 1e-12) "simulate frame Score" 8.0 (scalar_val simulated);
+  check (float 1e-12) "assess frame Score" 8.0 (scalar_val assessed);
+  check (float 1e-12) "assess_expr frame Score" 8.0 (scalar_val symbolic)
+
 (* ── discrete seed prohibition ── *)
 
 (* Simple substring check without Str dependency *)
@@ -460,6 +473,7 @@ let () =
           test_case "scalar" `Quick test_assess_expr_scalar;
           test_case "frame" `Quick test_assess_expr_frame;
           test_case "with score" `Quick test_assess_expr_with_score;
+          test_case "frame score" `Quick test_frame_score;
         ] );
       ( "discrete_guard",
         [

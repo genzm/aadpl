@@ -14,7 +14,7 @@ type viewspec = viewop list              (* applied left-to-right *)
 
 type prim =
   (* map1 *)
-  | Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv
+  | Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv
   (* map2 — require shape match *)
   | Add | Sub | Mul | Div | Max2
   (* reduce *)
@@ -126,6 +126,7 @@ let pp_prim fmt = function
   | Neg -> Format.fprintf fmt "neg"
   | Exp -> Format.fprintf fmt "exp"
   | Log -> Format.fprintf fmt "log"
+  | Logsigmoid -> Format.fprintf fmt "logsigmoid"
   | Sqrt -> Format.fprintf fmt "sqrt"
   | Relu -> Format.fprintf fmt "relu"
   | Step -> Format.fprintf fmt "step"

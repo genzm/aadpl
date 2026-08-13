@@ -13,6 +13,14 @@ let scalar v =
 
 let scalar_val (t : Tensor.t) = Buf.get t.buf 0
 
+let sum_all (t : Tensor.t) =
+  let n = Ndview.numel t.view in
+  let data = Buf.create n in
+  Tensor.read_view ~src:t.buf ~view:t.view ~dst:data;
+  let total = ref 0.0 in
+  for i = 0 to n - 1 do total := !total +. Buf.get data i done;
+  !total
+
 (* Sample from a distribution given PRNG key, site_id, and component path.
    component encodes D_product tree position: root=1, left=2k, right=2k+1. *)
 let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
@@ -128,7 +136,7 @@ let simulate ?sites ~run_key (env : Eval.env) (e : Types.expr) :
           (Eval.Eval_error (loc, "Rank node must be expanded before simulate"))
     | Score (_, e) ->
         let v = go env e in
-        let s = scalar_val v in
+        let s = sum_all v in
         log_weight := !log_weight +. s;
         scalar 0.0
     | Sample (_, name, frame, dist) ->

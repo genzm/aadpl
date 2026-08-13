@@ -11,6 +11,14 @@ let scalar v =
 
 let scalar_val (t : Tensor.t) = Buf.get t.buf 0
 
+let sum_all (t : Tensor.t) =
+  let n = Ndview.numel t.view in
+  let data = Buf.create n in
+  Tensor.read_view ~src:t.buf ~view:t.view ~dst:data;
+  let total = ref 0.0 in
+  for i = 0 to n - 1 do total := !total +. Buf.get data i done;
+  !total
+
 (* Compute log density of a value under a distribution.
    For D_pushforward, uses JVP to compute the Jacobian of inv. *)
 let rec log_density (dist : Types.dist) (x : Tensor.t)
@@ -76,7 +84,7 @@ let assess (env : Eval.env) (e : Types.expr)
       raise (Eval.Eval_error (loc, "Rank node must be expanded before assess"))
     | Score (_, e) ->
       let v = go env e in
-      log_density_acc := !log_density_acc +. scalar_val v;
+      log_density_acc := !log_density_acc +. sum_all v;
       scalar 0.0
     | Sample (_, name, frame, dist) ->
       let v = List.assoc name trace in

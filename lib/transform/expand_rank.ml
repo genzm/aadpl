@@ -11,7 +11,7 @@ open Ast.Types
 (* cell_rank: intrinsic minimum rank per argument.
    k in Rank(k, p, args) must be >= max(cell_rank p). *)
 let cell_rank : prim -> int list = function
-  | Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv -> [0]
+  | Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv -> [0]
   | Add | Sub | Mul | Div | Max2  -> [0; 0]
   | Sum_axis _ | Max_axis _ | Argmax_axis _ -> [1]
   | Select_axis _                -> [1; 0]  (* data rank >= 1; index is scalar-per-cell *)
@@ -92,7 +92,7 @@ let rec infer_shape (senv : shape_env) (e : expr) : int array =
 
 and output_shape (p : prim) (shapes : int array list) : int array =
   match p, shapes with
-  | (Neg | Exp | Log | Sqrt | Relu | Step | Erf | Erfinv), [s] -> s
+  | (Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv), [s] -> s
   | (Add | Sub | Mul | Div | Max2), [s; _] -> s
   | (Sum_axis axis | Max_axis axis | Argmax_axis axis), [s] ->
     let r = Array.length s in
