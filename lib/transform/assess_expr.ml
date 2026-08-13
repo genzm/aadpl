@@ -76,11 +76,12 @@ let rec subst ~from ~(to_ : expr) (e : expr) : expr =
 and subst_dist ~from ~to_ = function
   | D_uniform -> D_uniform
   | D_categorical weights -> D_categorical (subst ~from ~to_ weights)
-  | D_pushforward { fwd_var; fwd; inv_var; inv; base } ->
+  | D_pushforward { fwd_var; fwd; inv_var; inv; support; base } ->
       let fwd = if fwd_var = from then fwd else subst ~from ~to_ fwd in
       let inv = if inv_var = from then inv else subst ~from ~to_ inv in
       D_pushforward
-        { fwd_var; fwd; inv_var; inv; base = subst_dist ~from ~to_ base }
+        { fwd_var; fwd; inv_var; inv; support;
+          base = subst_dist ~from ~to_ base }
   | D_product (a, b) ->
       D_product (subst_dist ~from ~to_ a, subst_dist ~from ~to_ b)
 

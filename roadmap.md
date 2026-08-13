@@ -403,21 +403,25 @@ Phase 2 と同じ形の検査が、プログラム全体に効く。加えて勾
 
 ---
 
-#### Phase 12 — `Restrict` と階層モデル（1週間）
+#### Phase 12 — HalfNormal と階層モデル（1週間）
 
 **作る**
 
-- `Restrict(μ, A, Z)` 構成子
-- 固定予算 $K$ の棄却サンプラ（$K$ 試行は**ランク1の配列演算**）
-- `HalfNormal = Restrict(Normal(0,σ), x>0, 1/2)`
+- `HalfNormal` は `Uniform` の直接 pushforward として定義する
+- site が先行 site を分布パラメータとして参照する階層モデル
+- support 包含検査、観測 site、SBC、ragged のパディング + マスク
 - 固定反復の optimizer（modifier）
-- ragged のパディング + マスク
+
+`Restrict` 構成子と棄却サンプラは実装しない。HalfNormal の直接
+pushforward が逆写像・密度・正規化・FD の全検査を通ったためである。
+Gamma / Beta / Dirichlet、または一般の切断正規が必要になった時点で再考する。
+したがって分布代数の `Restrict` を含む閉包の主張は未検証のまま残る。
 
 **検査**
 
-- 内積等式（`Restrict` を含むプログラム）
+- 内積等式（階層確率プログラム）
 - **SBC**（事前から引く → データ生成 → 推論 → 順位の一様性）
-- 受容率の実測と $Z$ の照合
+- HalfNormal の逆写像・閉形式密度・正規化・FD
 
 ---
 

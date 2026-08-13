@@ -132,9 +132,10 @@ let expand ?(senv : shape_env = []) (e : expr) : expr =
   let rec go_dist senv = function
     | D_uniform -> D_uniform
     | D_categorical e -> D_categorical (go senv e)
-    | D_pushforward { fwd_var; fwd; inv_var; inv; base } ->
+    | D_pushforward { fwd_var; fwd; inv_var; inv; support; base } ->
       D_pushforward { fwd_var; fwd = go senv fwd;
                       inv_var; inv = go senv inv;
+                      support;
                       base = go_dist senv base }
     | D_product (a, b) -> D_product (go_dist senv a, go_dist senv b)
   and go (senv : shape_env) e =

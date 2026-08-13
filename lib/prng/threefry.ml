@@ -37,12 +37,19 @@ let to_open_unit (x : int64) : float =
 (* Key construction: (run_key, namespace) *)
 let make_key ~run_key ~namespace : int64 * int64 = (run_key, namespace)
 
-(* Counter construction: structurally injective.
-   ctr[0] = site_id (upper 32 bits) | component (lower 32 bits)
-   ctr[1] = frame_index
+(* Counter construction: structurally injective on the checked domain.
+   ctr[0] = site_id (unsigned upper 32 bits) | component (unsigned lower 32 bits)
+   ctr[1] = frame_index (nonnegative OCaml int, hence at most Stdlib.max_int)
    component encodes D_product tree path: root=1, left=2k, right=2k+1.
-   Injective for depth ≤ 31. *)
+   Injective for site_id/component <= 2^32-1 and D_product depth <= 31. *)
 let make_ctr ~site_id ~component ~frame_index : int64 * int64 =
+  let max_u32 = 0xffff_ffff in
+  if site_id < 0 || site_id > max_u32 then
+    invalid_arg "Threefry.make_ctr: site_id outside unsigned 32-bit range";
+  if component < 0 || component > max_u32 then
+    invalid_arg "Threefry.make_ctr: component outside unsigned 32-bit range";
+  if frame_index < 0 then
+    invalid_arg "Threefry.make_ctr: negative frame_index";
   ( Int64.logor
       (Int64.shift_left (Int64.of_int site_id) 32)
       (Int64.of_int component),

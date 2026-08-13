@@ -50,6 +50,31 @@ let test_sensitivity () =
   if b0 = c0 then fail "both perturbations should differ";
   check pass "sensitivity" () ()
 
+let test_counter_boundaries () =
+  let cases =
+    [
+      (0, 0, 0);
+      (0, 1, 47_039_999);
+      (1, 0, 47_040_000);
+      (0xffff_ffff, 0xffff_ffff, max_int);
+    ]
+  in
+  let counters = List.map (fun (site_id, component, frame_index) ->
+    Threefry.make_ctr ~site_id ~component ~frame_index) cases in
+  check int "counter encoding is injective" (List.length counters)
+    (List.length (List.sort_uniq compare counters));
+  check_raises "negative frame_index"
+    (Invalid_argument "Threefry.make_ctr: negative frame_index")
+    (fun () -> ignore (Threefry.make_ctr ~site_id:0 ~component:1 ~frame_index:(-1)));
+  check_raises "site_id above 32 bits"
+    (Invalid_argument "Threefry.make_ctr: site_id outside unsigned 32-bit range")
+    (fun () -> ignore (Threefry.make_ctr
+      ~site_id:0x1_0000_0000 ~component:1 ~frame_index:0));
+  check_raises "component above 32 bits"
+    (Invalid_argument "Threefry.make_ctr: component outside unsigned 32-bit range")
+    (fun () -> ignore (Threefry.make_ctr
+      ~site_id:0 ~component:0x1_0000_0000 ~frame_index:0))
+
 (* ── Namespace sensitivity ── *)
 
 let test_namespace_sensitivity () =
@@ -111,6 +136,7 @@ let () =
     "properties", [
       test_case "reproducibility"        `Quick test_reproducibility;
       test_case "sensitivity"            `Quick test_sensitivity;
+      test_case "counter boundaries"     `Quick test_counter_boundaries;
       test_case "namespace sensitivity"  `Quick test_namespace_sensitivity;
       test_case "open unit range"        `Quick test_open_unit_range;
       test_case "moments"                `Quick test_moments;

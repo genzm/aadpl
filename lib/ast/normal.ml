@@ -39,5 +39,6 @@ let normal ~mu ~sigma : dist =
                               prim Mul [var sigma; sqrt2]]]
         ]
       ];
+    support = S_real;
     base = D_uniform;
   }

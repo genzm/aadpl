@@ -16,6 +16,21 @@ let rec dist_kind = function
   | D_product (a, b) ->
       if dist_kind a = `Cont && dist_kind b = `Cont then `Cont else `Disc
 
+let rec dist_support = function
+  | D_uniform -> S_unit_interval
+  | D_categorical _ -> S_finite
+  | D_pushforward { support; _ } -> support
+  | D_product (a, b) -> S_product (dist_support a, dist_support b)
+
+let rec support_subset left right =
+  left = right
+  || match left, right with
+     | (S_unit_interval | S_positive), S_real -> true
+     | S_unit_interval, S_positive -> true
+     | S_product (la, lb), S_product (ra, rb) ->
+         support_subset la ra && support_subset lb rb
+     | _ -> false
+
 (* The sole definition of static site traversal and numbering. *)
 let collect_sites (e : expr) : site list =
   (* Duplicate names would alias both the counter and generated %u/%tr names. *)

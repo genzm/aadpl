@@ -2,6 +2,9 @@ type loc = { file : string; line : int; col : int }
 
 let dummy_loc = { file = "<none>"; line = 0; col = 0 }
 
+(* Identifiers beginning with '%' are reserved for generated IR names.
+   The future surface lexer will enforce this; core AST clients are trusted. *)
+
 (* --- viewspec: logical description of affine index maps --- *)
 
 type viewop =
@@ -45,12 +48,20 @@ type expr =
 
 and value = View.Tensor.t   (* future: variant with dtype *)
 
+and support =
+  | S_real
+  | S_positive
+  | S_unit_interval
+  | S_finite
+  | S_product of support * support
+
 and dist =
   | D_uniform
   | D_categorical of expr
   | D_pushforward of {
       fwd_var : string; fwd : expr;
       inv_var : string; inv : expr;
+      support : support;
       base : dist;
     }
   | D_product of dist * dist
@@ -163,7 +174,7 @@ let pp_prim fmt = function
 let rec pp_dist fmt = function
   | D_uniform -> Format.fprintf fmt "Uniform"
   | D_categorical w -> Format.fprintf fmt "Cat(%a)" pp w
-  | D_pushforward { fwd_var; fwd; inv_var; inv; base } ->
+  | D_pushforward { fwd_var; fwd; inv_var; inv; base; _ } ->
     Format.fprintf fmt "Push(%s->%a, %s->%a, %a)"
       fwd_var pp fwd inv_var pp inv pp_dist base
   | D_product (a, b) ->

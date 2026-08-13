@@ -88,6 +88,11 @@
  (modules test_vae)
  (libraries transform ast alcotest))
 
+(test
+ (name test_phase12)
+ (modules test_phase12)
+ (libraries transform ast alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)

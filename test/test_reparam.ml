@@ -374,6 +374,7 @@ let test_site_kind_pushforward_discrete () =
         fwd = var "u";
         inv_var = "x";
         inv = var "x";
+        support = S_finite;
         base = D_categorical weights;
       }
   in

@@ -65,6 +65,7 @@ let build_elbo ~model ~guide ~(env_shapes : (string * int array) list) :
   check_sites model;
   Reparam.check_guide guide;
   Reparam.check_trace_compat ~model ~guide;
+  Reparam.check_support_compat ~model ~guide;
   let sites = Ast.Sites.collect_sites guide in
   let noise =
     List.map

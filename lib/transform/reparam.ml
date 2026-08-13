@@ -198,6 +198,32 @@ let check_guide (e : expr) : unit =
 
 exception Trace_mismatch of string
 
+exception Support_mismatch of loc * string
+
+let check_support_compat ~model ~guide =
+  let rec collect acc = function
+    | Sample (loc, name, _, dist) -> (name, (loc, dist)) :: acc
+    | Let (_, _, e1, e2) -> collect (collect acc e1) e2
+    | Prim (_, _, args) | Rank (_, _, _, args) -> List.fold_left collect acc args
+    | Score (_, e) -> collect acc e
+    | Const _ | Var _ -> acc
+  in
+  let model_sites = collect [] model in
+  List.iter
+    (fun (name, (loc, guide_dist)) ->
+      match List.assoc_opt name model_sites with
+      | None -> ()
+      | Some (_, model_dist) ->
+          let guide_support = Ast.Sites.dist_support guide_dist in
+          let model_support = Ast.Sites.dist_support model_dist in
+          if not (Ast.Sites.support_subset guide_support model_support) then
+            raise
+              (Support_mismatch
+                 (loc, Printf.sprintf
+                    "guide support is not contained in model support at site '%s'"
+                    name)))
+    (collect [] guide)
+
 let check_trace_compat ~model ~guide =
   let model_sites = Ast.Sites.collect_sites model in
   let guide_sites = Ast.Sites.collect_sites guide in
