@@ -377,6 +377,30 @@ Phase 2 と同じ形の検査が、プログラム全体に効く。加えて勾
 - ELBO の勾配と有限差分の照合
 - 再構成画像が読める（PPM）
 
+**完了記録（Phase 11）**
+
+- 共役ガウス VI（`K=1000`）は、推定値 / 閉形式が
+  `mu=0.800647/0.805369`、`sigma=0.574023/0.573462`、
+  `ELBO=-1.601899/-1.601548` で一致した。
+- `batch=3, latent=2, obs=4` のミニ VAE で、site frame `[3,2]` と
+  Score shape `[3,4]` の経路を分け、encoder / decoder の全 10
+  パラメータ群について同じ ELBO 式の勾配を全要素 FD と照合した。
+- MNIST は `784-400-20`、batch 128、Adam、5 epoch。入力は
+  `ns_data` の Threefry による動的二値化
+  `x_ij ~ Bernoulli(pixel_ij)` とした。したがって Score は正規化された
+  Bernoulli 対数密度であり、報告値を ELBO と呼べる。holdout ELBO は
+  `-857.210 -> -122.694 -> -113.978 -> -110.980 -> -108.419 -> -107.006`。
+- 再構成画像と `z ~ N(0,I)` からの事前生成画像はいずれも数字として
+  読めた。平均 KL が `0.01` を超える活性潜在次元は `20/20`。
+- 学習ループは `batch_from -> noise_env -> eval_grad -> adam_ascent` のみ。
+  `build_elbo` と `grad` はループ前に一度だけ実行される。
+- 性能判定を修正する。「厚いプリミティブなら gemm が支配的」は MLP
+  では成立したが、VAE では不成立。release の学習 1 step は 116 ms。
+  `VAE_PROFILE=1` では `Buf.create` 238 回 / 45.5 MB、map1/map2 のうち
+  `logsigmoid + mul + add` が 56.3 ms、matmul は 22 回 / 15.6 ms
+  （wall time の約 13%）だった。非 gemm 経路が約 87% を占めるが、
+  51〜54 秒/epoch で実験可能なので Phase 11 では最適化しない。
+
 ---
 
 #### Phase 12 — `Restrict` と階層モデル（1週間）

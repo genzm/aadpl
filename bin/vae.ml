@@ -151,20 +151,30 @@ let shuffle epoch n =
   done;
   indices
 
-let batch_from (images : Tensor.t) indices offset batch pixels =
+(* Dynamic binarization: each epoch draws x_ij ~ Bernoulli(pixel_ij).
+   The Bernoulli Score is therefore a normalized log density, so the reported
+   objective is an actual ELBO.  site_id=1 separates these counters from the
+   ns_data shuffle counters (site_id=0). *)
+let batch_from ~run_key (images : Tensor.t) indices offset batch pixels =
   let result = Tensor.make [|batch; pixels|] in
+  let key = Prng.Threefry.make_key ~run_key
+    ~namespace:Prng.Threefry.ns_data in
   for row = 0 to batch - 1 do
     let source = indices.(offset + row) in
     for col = 0 to pixels - 1 do
+      let ctr = Prng.Threefry.make_ctr ~site_id:1 ~component:1
+        ~frame_index:(source * pixels + col) in
+      let bits, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
+      let draw = Prng.Threefry.to_open_unit bits in
       Buf.set result.buf (row * pixels + col)
-        (Buf.get images.buf (source * pixels + col))
+        (if Buf.get images.buf (source * pixels + col) > draw then 1.0 else 0.0)
     done
   done;
   result
 
-let sequential_batch (images : Tensor.t) offset batch pixels =
-  batch_from images (Array.init images.view.Ndview.shape.(0) Fun.id)
-    offset batch pixels
+let sequential_batch ~run_key (images : Tensor.t) offset batch pixels =
+  batch_from ~run_key images
+    (Array.init images.view.Ndview.shape.(0) Fun.id) offset batch pixels
 
 let reconstruction_expr ~param_shapes ~data_shapes =
   let expression =
@@ -173,6 +183,36 @@ let reconstruction_expr ~param_shapes ~data_shapes =
          (let_ "decoder_h" (prim Relu [dense (var "z_mean") "w3" "b3"])
             (let_ "eta" (dense (var "decoder_h") "w4" "b4")
                (prim Exp [prim Logsigmoid [var "eta"]]))))
+  in
+  Transform.Desugar.fuse_views
+    (Transform.Expand_rank.expand ~senv:(param_shapes @ data_shapes) expression)
+
+let latent_kl_expr ~batch ~param_shapes ~data_shapes =
+  let half = const (scalar 0.5) and one = const (scalar 1.0) in
+  let two = const (scalar 2.0) in
+  let expression =
+    let_ "encoder_h" (prim Relu [dense (var "x") "w1" "b1"])
+      (let_ "mu_q" (dense (var "encoder_h") "w_mu" "b_mu")
+         (let_ "rho_q" (dense (var "encoder_h") "w_rho" "b_rho")
+            (let_ "kl_cells"
+               (rank 0 Mul
+                  [
+                    half;
+                    rank 0 Sub
+                      [
+                        rank 0 Add
+                          [
+                            rank 0 Mul [var "mu_q"; var "mu_q"];
+                            prim Exp [rank 0 Mul [two; var "rho_q"]];
+                          ];
+                        rank 0 Add [one; rank 0 Mul [two; var "rho_q"]];
+                      ];
+                  ])
+               (rank 0 Mul
+                  [
+                    const (scalar (1.0 /. float_of_int batch));
+                    prim (Sum_axis 0) [var "kl_cells"];
+                  ]))))
   in
   Transform.Desugar.fuse_views
     (Transform.Expand_rank.expand ~senv:(param_shapes @ data_shapes) expression)
@@ -189,7 +229,6 @@ let generator_expr ~batch ~latent ~param_shapes ~data_shapes =
   Transform.Expand_rank.expand ~senv:(param_shapes @ data_shapes) expression
 
 let write_ppm path ~rows ~cols (images : Tensor.t) =
-  let count = rows * cols in
   let oc = open_out_bin path in
   Printf.fprintf oc "P6\n%d %d\n255\n" (cols * 28) (rows * 28);
   for grid_row = 0 to rows - 1 do
@@ -205,8 +244,7 @@ let write_ppm path ~rows ~cols (images : Tensor.t) =
       done
     done
   done;
-  close_out oc;
-  ignore count
+  close_out oc
 
 let ensure_dir path =
   if Sys.file_exists path then begin
@@ -236,9 +274,11 @@ let () =
   let evaluate (images : Tensor.t) n_batches run_key =
     let total = ref 0.0 in
     for bi = 0 to n_batches - 1 do
-      let x = sequential_batch images (bi * batch) batch pixels in
+      let batch_key = Int64.add run_key (Int64.of_int bi) in
+      let x = sequential_batch ~run_key:batch_key images
+        (bi * batch) batch pixels in
       let env = Transform.noise_env program
-        ~run_key:(Int64.add run_key (Int64.of_int bi))
+        ~run_key:batch_key
         @ (("x", x) :: !params @ fixed) in
       total := !total +. scalar_value (Ast.Eval.eval env average_elbo)
     done;
@@ -247,17 +287,18 @@ let () =
   let initial_holdout = evaluate test 10 1000000L in
   Printf.printf "MNIST VAE 784-%d-%d, batch %d\n" hidden latent batch;
   Printf.printf "initial holdout ELBO: %.3f\n%!" initial_holdout;
-  if profile then begin Ast.Eval.reset_stats (); Ast.Eval.enable_stats () end;
   for epoch = 1 to epochs do
     let indices = shuffle epoch train.view.Ndview.shape.(0) in
     let available = train.view.Ndview.shape.(0) / batch in
     let n_batches = match batch_limit with
       | None -> available | Some limit -> min limit available in
     let epoch_elbo = ref 0.0 in
+    if profile then begin Ast.Eval.reset_stats (); Ast.Eval.enable_stats () end;
     let started = Unix.gettimeofday () in
     for bi = 0 to n_batches - 1 do
       incr step;
-      let x = batch_from train indices (bi * batch) batch pixels in
+      let x = batch_from ~run_key:(Int64.of_int epoch) train indices
+        (bi * batch) batch pixels in
       let env = Transform.noise_env program ~run_key:(Int64.of_int !step)
         @ (("x", x) :: !params @ fixed) in
       let elbo, gradients = Ast.Eval.eval_grad env
@@ -269,6 +310,7 @@ let () =
         states !params gradients
     done;
     let elapsed = Unix.gettimeofday () -. started in
+    if profile then begin Ast.Eval.disable_stats (); Ast.Eval.report () end;
     let train_elbo = !epoch_elbo /. float_of_int n_batches in
     let holdout = evaluate test 10 (Int64.of_int (1000000 + epoch * 100)) in
     Printf.printf
@@ -276,9 +318,8 @@ let () =
       epoch train_elbo holdout elapsed
       (elapsed *. 1000.0 /. float_of_int n_batches)
   done;
-  if profile then begin Ast.Eval.disable_stats (); Ast.Eval.report () end;
   ensure_dir output_dir;
-  let x = sequential_batch test 0 batch pixels in
+  let x = sequential_batch ~run_key:2000000L test 0 batch pixels in
   let reconstruction = reconstruction_expr ~param_shapes ~data_shapes
     |> Ast.Eval.eval (("x", x) :: !params @ fixed) in
   write_ppm (Filename.concat output_dir "reconstruction.ppm")
@@ -288,6 +329,20 @@ let () =
     (!params @ fixed) generator in
   write_ppm (Filename.concat output_dir "prior.ppm")
     ~rows:8 ~cols:8 generated;
+  let kl_expr = latent_kl_expr ~batch ~param_shapes ~data_shapes in
+  let kl_sums = Array.make latent 0.0 in
+  for bi = 0 to 9 do
+    let x = sequential_batch ~run_key:(Int64.of_int (3000000 + bi)) test
+      (bi * batch) batch pixels in
+    let kl = Ast.Eval.eval (("x", x) :: !params @ fixed) kl_expr in
+    for dim = 0 to latent - 1 do
+      kl_sums.(dim) <- kl_sums.(dim) +. Buf.get kl.buf dim
+    done
+  done;
+  let active = ref 0 in
+  Array.iter (fun total -> if total /. 10.0 > 0.01 then incr active) kl_sums;
+  Printf.printf "active latent dimensions (mean KL > 0.01): %d/%d\n"
+    !active latent;
   Printf.printf "wrote %s and %s\n"
     (Filename.concat output_dir "reconstruction.ppm")
     (Filename.concat output_dir "prior.ppm")
