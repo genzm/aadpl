@@ -78,6 +78,19 @@ let test_elbo_eval () =
   let elbo_sym = scalar_val (Ast.Eval.eval (noise @ env) program.elbo) in
   check (float 1e-12) "ELBO eval" elbo_val elbo_sym
 
+let test_noise_namespaces () =
+  let guide = sample "z" [||] D_uniform in
+  let sites = Ast.Sites.collect_sites guide in
+  let _, trace, _ = Ast.Simulate.simulate ~sites ~run_key:42L [] guide in
+  let model_noise = Ast.Sites.draw_noise ~run_key:42L sites in
+  let guide_noise = Ast.Sites.draw_noise
+    ~namespace:Prng.Threefry.ns_guide ~run_key:42L sites in
+  let traced = scalar_val (List.assoc "z" trace) in
+  let model_u = scalar_val (List.assoc "%u.z" model_noise) in
+  let guide_u = scalar_val (List.assoc "%u.z" guide_noise) in
+  check bool "simulate couples to ns_model" true (traced = model_u);
+  check bool "ns_guide differs from ns_model" true (guide_u <> model_u)
+
 (* ── Stage 2: ELBO gradient vs central FD ── *)
 
 let test_elbo_grad () =
@@ -318,7 +331,11 @@ let test_two_site_value_match () =
 let () =
   run "ELBO"
     [
-      ("eval", [ test_case "value match" `Quick test_elbo_eval ]);
+      ( "eval",
+        [
+          test_case "value match" `Quick test_elbo_eval;
+          test_case "noise namespaces" `Quick test_noise_namespaces;
+        ] );
       ( "grad",
         [
           test_case "FD check" `Quick test_elbo_grad;

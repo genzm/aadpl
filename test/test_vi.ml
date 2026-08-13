@@ -40,10 +40,7 @@ let adam_ascent ~step ~learning_rate state parameter gradient =
   +. learning_rate *. (state.m /. correction1)
      /. (sqrt (state.v /. correction2) +. epsilon)
 
-let test_conjugate_gaussian_vi () =
-  let samples = 1000 in
-  let observed = 1.2 in
-  let observation_sigma = 0.7 in
+let conjugate_program samples =
   let model =
     let_ "z"
       (sample "z" [| samples |]
@@ -58,14 +55,71 @@ let test_conjugate_gaussian_vi () =
   in
   let env_shapes =
     [
-      ("prior_mu", [||]);
-      ("prior_sigma", [||]);
-      ("x_obs", [||]);
-      ("obs_sigma", [||]);
-      ("mu_q", [||]);
-      ("log_sigma_q", [||]);
+      ("prior_mu", [||]); ("prior_sigma", [||]); ("x_obs", [||]);
+      ("obs_sigma", [||]); ("mu_q", [||]); ("log_sigma_q", [||]);
     ]
   in
+  model, guide, env_shapes
+
+let test_frame_sample_score_assess () =
+  let model, _, env_shapes = conjugate_program 3 in
+  let z = View.Tensor.make [|3|] in
+  List.iteri (View.Buf.set z.buf) [-0.2; 0.4; 1.1];
+  let env =
+    [
+      ("prior_mu", scalar 0.0); ("prior_sigma", scalar 1.0);
+      ("x_obs", scalar 1.2); ("obs_sigma", scalar 0.7);
+      ("mu_q", scalar 0.3); ("log_sigma_q", scalar (log 0.8));
+    ]
+  in
+  let model = Transform.Expand_rank.expand ~senv:env_shapes model in
+  let _, value_ld = Ast.Assess.assess env model [("z", z)] in
+  let symbolic_ld = Transform.Assess_expr.assess_expr ~env_shapes model
+    [("z", const z)] |> Ast.Eval.eval env in
+  check (float 1e-12) "frame Sample + Score" (scalar_value value_ld)
+    (scalar_value symbolic_ld)
+
+let test_conjugate_elbo_fd () =
+  let samples = 7 in
+  let model, guide, env_shapes = conjugate_program samples in
+  let program = Transform.build_elbo ~model ~guide ~env_shapes in
+  let average_elbo =
+    prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.elbo ]
+  in
+  let gp = Transform.grad
+    ~param_shapes:[("mu_q", [||]); ("log_sigma_q", [||])]
+    ~data_shapes:
+      (program.noise @ [
+        ("prior_mu", [||]); ("prior_sigma", [||]);
+        ("x_obs", [||]); ("obs_sigma", [||]);
+      ])
+    average_elbo
+  in
+  let fixed_env =
+    Transform.noise_env program ~run_key:42L @ [
+      ("prior_mu", scalar 0.0); ("prior_sigma", scalar 1.0);
+      ("x_obs", scalar 1.2); ("obs_sigma", scalar 0.7);
+    ]
+  in
+  let make_env mu rho =
+    ("mu_q", scalar mu) :: ("log_sigma_q", scalar rho) :: fixed_env
+  in
+  let mu = 0.3 and rho = log 0.8 and epsilon = 1e-5 in
+  let env = make_env mu rho in
+  let ad name = scalar_value (Ast.Eval.eval env (List.assoc name gp.grads)) in
+  let eval mu rho = scalar_value (Ast.Eval.eval (make_env mu rho) gp.loss) in
+  let fd_mu = (eval (mu +. epsilon) rho -. eval (mu -. epsilon) rho)
+              /. (2.0 *. epsilon) in
+  let fd_rho = (eval mu (rho +. epsilon) -. eval mu (rho -. epsilon))
+               /. (2.0 *. epsilon) in
+  check (float 1e-6) "mu_q FD" fd_mu (ad "mu_q");
+  check (float 1e-6) "rho FD" fd_rho (ad "log_sigma_q")
+
+let test_conjugate_gaussian_vi () =
+  let samples = 1000 in
+  let observed = 1.2 in
+  let observation_sigma = 0.7 in
+  let model, guide, env_shapes = conjugate_program samples in
   let program = Transform.build_elbo ~model ~guide ~env_shapes in
   let average_elbo =
     prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.elbo ]
@@ -147,4 +201,10 @@ let () =
   run "VI"
     [
       ("conjugate", [ test_case "closed form" `Slow test_conjugate_gaussian_vi ]);
+      ( "preflight",
+        [
+          test_case "frame Sample + Score assess" `Quick
+            test_frame_sample_score_assess;
+          test_case "ELBO FD" `Quick test_conjugate_elbo_fd;
+        ] );
     ]
