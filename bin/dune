@@ -2,3 +2,8 @@
  (name main)
  (public_name lang)
  (libraries view kernel ast transform))
+
+(executable
+ (name vae)
+ (public_name lang-vae)
+ (libraries view ast transform prng unix))

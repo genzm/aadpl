@@ -47,6 +47,7 @@ type grad_program = {
   (* Shared-evaluation form: primal computed once *)
   primal_bindings : (string * expr) list;
   loss_body : expr;
+  grad_bindings : (string * expr) list;
   grad_bodies : (string * expr) list; (* (param_name, grad_body_expr) *)
 }
 
@@ -191,13 +192,14 @@ let grad ~(param_shapes : (string * int array) list)
       tr.Transpose.grad_map
   in
   let grads = List.map (fun (p, _, w) -> (p, w)) grad_bodies_and_wrapped in
-  let grad_bodies =
-    List.map (fun (p, b, _) -> (p, b)) grad_bodies_and_wrapped
-  in
+  let grad_bindings = ("%ct", const ct_tensor) :: tr.Transpose.grad_bindings in
+  let grad_bodies = List.map (fun (seed, body) ->
+    (List.assoc seed seed_to_param, body)) tr.Transpose.grad_map in
   {
     loss;
     grads;
     primal_bindings = uz.primal_bindings;
     loss_body = uz.primal_out;
+    grad_bindings;
     grad_bodies;
   }

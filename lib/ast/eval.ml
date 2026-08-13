@@ -551,11 +551,14 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
 let eval_grad (env : env)
     ~(primal_bindings : (string * Types.expr) list)
     ~(loss_body : Types.expr)
+    ~(grad_bindings : (string * Types.expr) list)
     ~(grad_bodies : (string * Types.expr) list)
     : Types.value * (string * Types.value) list =
   let env = List.fold_left (fun acc (name, e) ->
     (name, eval acc e) :: acc) env primal_bindings in
   let loss = eval env loss_body in
+  let env = List.fold_left (fun acc (name, e) ->
+    (name, eval acc e) :: acc) env grad_bindings in
   let grads = List.map (fun (param, body) ->
     (param, eval env body)) grad_bodies in
   (loss, grads)

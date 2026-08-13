@@ -81,15 +81,19 @@ let test_elbo_eval () =
 let test_noise_namespaces () =
   let guide = sample "z" [||] D_uniform in
   let sites = Ast.Sites.collect_sites guide in
+  let program = Transform.build_elbo ~model:guide ~guide ~env_shapes:[] in
   let _, trace, _ = Ast.Simulate.simulate ~sites ~run_key:42L [] guide in
   let model_noise = Ast.Sites.draw_noise ~run_key:42L sites in
   let guide_noise = Ast.Sites.draw_noise
     ~namespace:Prng.Threefry.ns_guide ~run_key:42L sites in
+  let helper_noise = Transform.noise_env program ~run_key:42L in
   let traced = scalar_val (List.assoc "z" trace) in
   let model_u = scalar_val (List.assoc "%u.z" model_noise) in
   let guide_u = scalar_val (List.assoc "%u.z" guide_noise) in
+  let helper_u = scalar_val (List.assoc "%u.z" helper_noise) in
   check bool "simulate couples to ns_model" true (traced = model_u);
-  check bool "ns_guide differs from ns_model" true (guide_u <> model_u)
+  check bool "ns_guide differs from ns_model" true (guide_u <> model_u);
+  check bool "noise_env uses ns_guide" true (helper_u = guide_u)
 
 (* ── Stage 2: ELBO gradient vs central FD ── *)
 

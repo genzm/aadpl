@@ -19,6 +19,19 @@ let sum_all (t : Tensor.t) =
   for i = 0 to n - 1 do total := !total +. Buf.get data i done;
   !total
 
+let frame_cell frame i (t : Tensor.t) =
+  if t.view.Ndview.shape <> frame then t
+  else begin
+    let rank = Array.length frame in
+    let index = Array.make rank 0 in
+    let linear = ref i in
+    for axis = rank - 1 downto 0 do
+      index.(axis) <- !linear mod frame.(axis);
+      linear := !linear / frame.(axis)
+    done;
+    scalar (Buf.get t.buf (Ndview.index_of t.view index))
+  end
+
 (* Compute log density of a value under a distribution.
    For D_pushforward, uses JVP to compute the Jacobian of inv. *)
 let rec log_density (dist : Types.dist) (x : Tensor.t)
@@ -96,7 +109,9 @@ let assess (env : Eval.env) (e : Types.expr)
         let n = Array.fold_left ( * ) 1 frame in
         for i = 0 to n - 1 do
           let xi = scalar (Buf.get v.buf i) in
-          let ld = log_density dist xi env in
+          let cell_env = List.map (fun (name, value) ->
+            (name, frame_cell frame i value)) env in
+          let ld = log_density dist xi cell_env in
           log_density_acc := !log_density_acc +. ld
         done
       end;

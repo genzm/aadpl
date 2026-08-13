@@ -13,3 +13,4 @@ _opam/
 *.a
 .DS_Store
 data/
+vae-output/

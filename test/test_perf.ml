@@ -486,6 +486,7 @@ let bench_mlp_train () =
     let (loss_v, grad_list) = Ast.Eval.eval_grad env
       ~primal_bindings:gp.primal_bindings
       ~loss_body:gp.loss_body
+      ~grad_bindings:gp.grad_bindings
       ~grad_bodies:gp.grad_bodies in
     losses.(step) <- scalar_val loss_v;
     (* SGD update *)
@@ -644,6 +645,7 @@ let bench_mnist () =
       let (loss_v, grad_list) = Ast.Eval.eval_grad env
         ~primal_bindings:gp.primal_bindings
         ~loss_body:gp.loss_body
+        ~grad_bindings:gp.grad_bindings
         ~grad_bodies:gp.grad_bodies in
       epoch_loss := !epoch_loss +. scalar_val loss_v;
       params := List.map (fun (name, w) ->

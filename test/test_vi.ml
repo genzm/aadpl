@@ -151,6 +151,8 @@ let test_conjugate_gaussian_vi () =
   let mu_state = { m = 0.0; v = 0.0 } in
   let sigma_state = { m = 0.0; v = 0.0 } in
   let evaluate step =
+    (* SGD convention: redraw u from the deterministic Threefry stream each
+       step.  MNIST uses the same policy; fixed run_key would instead be SAA. *)
     let env =
       Transform.noise_env program ~run_key:(Int64.of_int step)
       @ [ ("mu_q", scalar !mu_q); ("log_sigma_q", scalar !log_sigma_q) ]
@@ -158,6 +160,7 @@ let test_conjugate_gaussian_vi () =
     in
     Ast.Eval.eval_grad env ~primal_bindings:differentiated.primal_bindings
       ~loss_body:differentiated.loss_body
+      ~grad_bindings:differentiated.grad_bindings
       ~grad_bodies:differentiated.grad_bodies
   in
   let initial_elbo, _ = evaluate 0 in

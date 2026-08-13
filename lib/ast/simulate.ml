@@ -80,9 +80,13 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
       else begin
         (* Batch evaluation: broadcast all scalar env values and Const nodes
          to frame shape, then eval once — G elements processed in one call. *)
-        let g = frame.(0) in
         let broadcast_to_frame (t : Tensor.t) : Tensor.t =
-          if t.view.Ndview.shape = [||] then Tensor.broadcast t ~axis:0 ~size:g
+          if t.view.Ndview.shape = [||] then
+            Array.fold_left
+              (fun value size ->
+                Tensor.broadcast value
+                  ~axis:(Array.length value.view.Ndview.shape) ~size)
+              t frame
           else t
         in
         let env' =
