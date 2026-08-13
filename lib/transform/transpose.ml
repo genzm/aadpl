@@ -135,6 +135,12 @@ let transpose
       if is_dep a then adjoint a ct;
       if is_dep b then adjoint b (prim Neg [ct])
 
+    | Mask, [a; mask] ->
+      if is_dep a && not (is_dep mask) then
+        adjoint a (prim Mask [ct; mask])
+      else
+        failwith "transpose: Mask mask is tangent-dependent"
+
     | Mul, [a; b] ->
       if is_dep a && not (is_dep b) then
         adjoint a (prim Mul [ct; b])

@@ -262,6 +262,8 @@ trace 上の対数密度を**式として**構成する。
 
 $\Post$: `elbo` は `Sample` / `Score` を含まず、自由変数は `noise ∪ env_shapes` の名前のみ。guide に現れる site が潜在、`observed` から式スロットを受ける model-only site が観測であり、この二集合は互いに素で model site 全体を分割する。Phase 12 では観測 site は連続分布に限る。
 
+`assess_expr` は各 site の密度入口に `Log_support_density`（値も接も零、宣言台外で loc 付き停止）を置く。押し出し基底の `Log_unit_density` は CDF の端点丸めを吸収する閉区間版だが、直接 Uniform site は前者の `S_unit_interval` により開区間のままであり、値版 `assess` と一致する。
+
 ### 3.2 微分（`grad`）
 
 ```
@@ -453,7 +455,7 @@ VAE の実測（batch 128、784-400-20、release、1 step）:
 | 追加 | 層 | $\Pr$ / $\Post$ |
 |---|---|---|
 | `Restrict` の展開（固定予算 $K$ の棄却） | コア → コア。`reparam` と同格 | $\Post$: `Restrict` を持つ `Sample` が残らない。**site 表に試行番号軸が増える**（§5 が受け止める） |
-| ragged のパディング + マスク | 展開済みコア | $\Inv$: マスクされた位置が密度に寄与しない |
+| ragged のパディング + `Mask` | 展開済みコア | $\Inv$: 入力を安全値にしてから密度も零化し、マスク位置が値・随伴に寄与しない |
 | `_quadrature`（$K$ 節点の固定軸） | コア → コア | `_enumerate` と同型。$\Post$: 対象サイトが表から消え、重み付き軸に置き換わる |
 | `_importance` | 密度の系統 | $\Post$: **重みの配列を返す**（$\log Z$ に潰さない） |
 | 固定反復 optimizer | 学習ループ側 | 式に $M$ 反復を展開しない（AST サイズの爆発を避ける） |

@@ -89,9 +89,8 @@ let test_support_runtime () =
       [("tau", scalar (-0.5))]));
   let symbolic = Transform.Assess_expr.assess_expr
     ~env_shapes:[("sigma", [||])] program [("tau", const (scalar (-0.5)))] in
-  check_raises "assess_expr rejects value outside base support"
-    (Ast.Eval.Eval_error
-       (loc, "value outside Uniform density domain [0,1]"))
+  check_raises "assess_expr rejects value outside declared support"
+    (Ast.Eval.Eval_error (loc, "value outside declared support"))
     (fun () -> ignore (Ast.Eval.eval [("sigma", scalar 1.0)] symbolic));
   let normal = Sample (loc, "x", [||],
     Ast.Normal.normal ~mu:"mu" ~sigma:"sigma") in
@@ -104,6 +103,22 @@ let test_support_runtime () =
     (Float.is_finite (value tail_ld 0));
   check bool "far Normal tail remains finite (expr)" true
     (Float.is_finite (value tail_expr 0))
+
+let test_symbolic_declared_support () =
+  let loc = {file = "support"; line = 20; col = 1} in
+  let uniform = Sample (loc, "u", [||], D_uniform) in
+  List.iter (fun endpoint ->
+    check_raises "assess rejects Uniform endpoint"
+      (Ast.Assess.Support_error
+         (loc, "value outside support at site 'u'"))
+      (fun () -> ignore (Ast.Assess.assess [] uniform
+        [("u", scalar endpoint)]));
+    let symbolic = Transform.Assess_expr.assess_expr ~env_shapes:[] uniform
+      [("u", const (scalar endpoint))] in
+    check_raises "assess_expr rejects Uniform endpoint"
+      (Ast.Eval.Eval_error (loc, "value outside declared support"))
+      (fun () -> ignore (Ast.Eval.eval [] symbolic)))
+    [0.0; 1.0]
 
 let test_support_declarations () =
   let distributions =
@@ -498,6 +513,45 @@ let test_sbc_language_vi () =
     (rank_histogram (List.map joint_per_repetition draws)
        (joint_per_repetition z_true))
 
+let ragged_objective () =
+  let half = const (scalar 0.5) in
+  let log_two_pi = const (scalar (log (2.0 *. Float.pi))) in
+  let sigma = prim Exp [var "log_sigma"] in
+  (* Sanitize padding before density evaluation, then mask its contribution.
+     The inner mask keeps invalid residuals out of reverse-mode residuals. *)
+  let safe_y = rank 0 Mask [var "y"; var "mask"] in
+  let standardized = rank 0 Div [rank 0 Sub [safe_y; var "mu"]; sigma] in
+  let log_density = rank 0 Neg [rank 0 Add [
+    rank 0 Add [rank 0 Mul [half; log_two_pi]; prim Log [sigma]];
+    rank 0 Mul [half; rank 0 Mul [standardized; standardized]];
+  ]] in
+  let cells = rank 0 Mask [log_density; var "mask"] in
+  prim (Sum_axis 0) [prim (Sum_axis 0) [cells]]
+
+let test_ragged_mask_invariance () =
+  let frame = [|2; 4|] in
+  let objective = ragged_objective () in
+  let gp = Transform.grad
+    ~param_shapes:[("mu", [||]); ("log_sigma", [||])]
+    ~data_shapes:[("y", frame); ("mask", frame)] objective in
+  let mask = tensor frame [|1.0; 1.0; 0.0; 0.0; 1.0; 0.0; 0.0; 0.0|] in
+  let y_a = tensor frame [|0.2; -0.4; 7.0; 8.0; 1.1; 9.0; 10.0; 11.0|] in
+  let y_b = tensor frame
+    [|0.2; -0.4; Float.nan; infinity; 1.1; neg_infinity; -1e300; 1e300|] in
+  let eval y =
+    let env = [("mu", scalar 0.3); ("log_sigma", scalar (log 1.2));
+               ("y", y); ("mask", mask)] in
+    let loss, grads = Ast.Eval.eval_grad env
+      ~primal_bindings:gp.primal_bindings ~loss_body:gp.loss_body
+      ~grad_bindings:gp.grad_bindings ~grad_bodies:gp.grad_bodies in
+    value loss 0, List.map (fun (name, gradient) -> name, value gradient 0) grads
+  in
+  let loss_a, grads_a = eval y_a and loss_b, grads_b = eval y_b in
+  check bool "masked density bit invariant" true (loss_a = loss_b);
+  List.iter (fun (name, expected) ->
+    check bool (name ^ " gradient bit invariant") true
+      (expected = List.assoc name grads_b)) grads_a
+
 let test_observed_site () =
   let model, guide = observed_program 3 in
   let shapes =
@@ -567,6 +621,8 @@ let () =
           test_case "normalizes" `Slow test_half_normal_normalizes;
           test_case "sigma FD" `Quick test_half_normal_sigma_fd;
           test_case "runtime support" `Quick test_support_runtime;
+          test_case "symbolic declared support" `Quick
+            test_symbolic_declared_support;
           test_case "support declarations" `Quick test_support_declarations;
           test_case "support partial order" `Quick test_support_partial_order;
         ] );
@@ -592,4 +648,7 @@ let () =
           test_case "1a closed posterior ranks" `Slow test_sbc_closed_form;
           test_case "1b language VI ranks" `Slow test_sbc_language_vi;
         ] );
+      ( "12-5 ragged masking",
+        [test_case "padding is bit invisible" `Quick
+           test_ragged_mask_invariance] );
     ]

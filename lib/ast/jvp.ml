@@ -101,6 +101,10 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
   | Log_unit_density, [(x, _dx)] ->
     (Tensor.make (shape_of x), zeros_like x)
 
+  | Log_support_density support, [(x, _dx)] ->
+    Eval.validate Types.dummy_loc (Log_support_density support) [x];
+    (Tensor.make (shape_of x), zeros_like x)
+
   | Sqrt, [(x, dx)] ->
     let os = shape_of x in
     let on = Array.fold_left ( * ) 1 os in
@@ -184,6 +188,10 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
     (* d(x/y) = (dx*y - x*dy) / y^2 *)
     let num = t_map2 ( -. ) (t_mul dx y) (t_mul x dy) in
     (primal, t_map2 ( /. ) num (t_mul y y))
+
+  | Mask, [(x, dx); (mask, _dmask)] ->
+    let apply value present = if present = 0.0 then 0.0 else value in
+    (t_map2 apply x mask, t_map2 apply dx mask)
 
   | Max2, [(x, dx); (y, dy)] ->
     let os = shape_of x in

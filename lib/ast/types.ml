@@ -15,12 +15,22 @@ type viewop =
 
 type viewspec = viewop list              (* applied left-to-right *)
 
+type support =
+  (* A D_pushforward support is an assertion supplied by the distribution
+     library author; arbitrary expression images cannot be derived generally. *)
+  | S_real
+  | S_positive
+  | S_unit_interval
+  | S_finite of int
+  | S_product of support * support
+
 type prim =
   (* map1 *)
   | Neg | Exp | Log | Logsigmoid | Log_unit_density
+  | Log_support_density of support
   | Sqrt | Relu | Step | Erf | Erfinv
   (* map2 — require shape match *)
-  | Add | Sub | Mul | Div | Max2
+  | Add | Sub | Mul | Div | Max2 | Mask
   (* reduce *)
   | Sum_axis of int | Max_axis of int
   (* structural *)
@@ -48,15 +58,6 @@ type expr =
   | Score  of loc * expr
 
 and value = View.Tensor.t   (* future: variant with dtype *)
-
-and support =
-  (* A D_pushforward support is an assertion supplied by the distribution
-     library author; arbitrary expression images cannot be derived generally. *)
-  | S_real
-  | S_positive
-  | S_unit_interval
-  | S_finite of int
-  | S_product of support * support
 
 and dist =
   | D_uniform
@@ -142,6 +143,7 @@ let pp_prim fmt = function
   | Log -> Format.fprintf fmt "log"
   | Logsigmoid -> Format.fprintf fmt "logsigmoid"
   | Log_unit_density -> Format.fprintf fmt "log_unit_density"
+  | Log_support_density _ -> Format.fprintf fmt "log_support_density"
   | Sqrt -> Format.fprintf fmt "sqrt"
   | Relu -> Format.fprintf fmt "relu"
   | Step -> Format.fprintf fmt "step"
@@ -152,6 +154,7 @@ let pp_prim fmt = function
   | Mul -> Format.fprintf fmt "mul"
   | Div -> Format.fprintf fmt "div"
   | Max2 -> Format.fprintf fmt "max2"
+  | Mask -> Format.fprintf fmt "mask"
   | Sum_axis a -> Format.fprintf fmt "sum_axis(%d)" a
   | Max_axis a -> Format.fprintf fmt "max_axis(%d)" a
   | Gather (axis, indices) ->

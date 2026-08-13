@@ -71,6 +71,9 @@ let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
     match p, args with
     (* linear unconditionally *)
     | (Neg | Add | Sub), _ -> check_args args
+    | Mask, [a; mask] ->
+      if is_dep mask then Some "Mask: mask is tangent-dependent"
+      else check_args [a]
     | (Sum_axis _ | Gather _ | Scatter_add _
       | Apply_view _ | Adjoint_view _), _ ->
       check_args args
@@ -100,7 +103,7 @@ let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
         Some "Scatter_select_add: index is tangent-dependent"
       else check_args [a]
     (* nonlinear map1/map2 must not have tangent-dependent args *)
-    | (Exp | Log | Logsigmoid | Log_unit_density
+    | (Exp | Log | Logsigmoid | Log_unit_density | Log_support_density _
       | Sqrt | Relu | Step | Erf | Erfinv), [a] ->
       if is_dep a then
         Some (Format.asprintf "%a: argument is tangent-dependent (nonlinear)"

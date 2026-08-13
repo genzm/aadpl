@@ -153,6 +153,21 @@ let test_div () =
   let dy = tensor_of_list [|3|] [0.4;0.5;0.6] in
   check_jvp_2 "div" (fun a b -> prim Div [a; b]) x dx y dy
 
+let test_mask () =
+  let x = tensor_of_list [|3|] [1.0; Float.nan; 3.0] in
+  let dx = tensor_of_list [|3|] [0.1; Float.infinity; 0.3] in
+  let mask = tensor_of_list [|3|] [1.0; 0.0; 1.0] in
+  let dmask = Tensor.make [|3|] in
+  let primal, tangent = Ast.Jvp.jvp_eval
+    [("x", (x, dx)); ("mask", (mask, dmask))]
+    (prim Mask [var "x"; var "mask"]) in
+  List.iteri (fun i expected ->
+    Alcotest.(check (float 0.0)) (Printf.sprintf "mask primal[%d]" i)
+      expected (tensor_get primal i)) [1.0; 0.0; 3.0];
+  List.iteri (fun i expected ->
+    Alcotest.(check (float 0.0)) (Printf.sprintf "mask tangent[%d]" i)
+      expected (tensor_get tangent i)) [0.1; 0.0; 0.3]
+
 let test_max2 () =
   (* avoid ties where max2 is non-differentiable *)
   let x = tensor_of_list [|3|] [1.;5.;3.] in
@@ -294,6 +309,7 @@ let () =
       test_case "mul" `Quick test_mul;
       test_case "div" `Quick test_div;
       test_case "max2" `Quick test_max2;
+      test_case "mask" `Quick test_mask;
     ];
     "reduce", [
       test_case "sum_axis" `Quick test_sum_axis;

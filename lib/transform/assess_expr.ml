@@ -146,6 +146,9 @@ let log_density_expr ~env_shapes ~loc _frame dist x =
   match log_density_raw loc dist x with
   | None -> None
   | Some raw ->
+      let raw = prim Add
+        [Prim (loc, Log_support_density (Ast.Sites.dist_support dist), [x]); raw]
+      in
       let wrapped = Reparam.wrap_rank0 raw in
       (* senv: free variables in the raw expression that need shapes *)
       let senv =

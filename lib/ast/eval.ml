@@ -205,8 +205,14 @@ let validate loc (p : Types.prim) (args : Tensor.t list) =
       if value < 0.0 || value > 1.0 then
         raise (Eval_error (loc, "value outside Uniform density domain [0,1]"))
     )
+  | Types.Log_support_density support, [x] ->
+    Ndview.iter_indices x.view.Ndview.shape (fun _ index ->
+      let value = Buf.get x.buf (Ndview.index_of x.view index) in
+      if not (Sites.support_contains support value) then
+        raise (Eval_error (loc, "value outside declared support"))
+    )
   | (Types.Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv), [_] -> ()
-  | (Types.Add | Sub | Mul | Div | Max2), [x; y] ->
+  | (Types.Add | Sub | Mul | Div | Max2 | Mask), [x; y] ->
     assert_shape loc "map2: shape mismatch" (shape_of x = shape_of y)
   | Sum_axis axis, [x] ->
     assert_shape loc "sum_axis: axis out of range"
@@ -317,6 +323,7 @@ let map1_f = function
   | Logsigmoid -> fun x ->
     if x >= 0.0 then -.log1p (exp (-.x)) else x -. log1p (exp x)
   | Log_unit_density -> fun _ -> 0.0
+  | Log_support_density _ -> fun _ -> 0.0
   | Sqrt -> sqrt
   | Relu -> fun x -> if x > 0.0 then x else 0.0
   | Step -> fun x -> if x > 0.0 then 1.0 else 0.0
@@ -330,15 +337,16 @@ let map2_f = function
   | Mul  -> ( *. )
   | Div  -> ( /. )
   | Max2 -> max
+  | Mask -> fun x mask -> if mask = 0.0 then 0.0 else x
   | _ -> assert false
 
 (* --- output shape for allocating ops --- *)
 
 let alloc_shape (p : Types.prim) (args : Tensor.t list) : int array =
   match p, args with
-  | (Types.Neg | Exp | Log | Logsigmoid | Log_unit_density
+  | (Types.Neg | Exp | Log | Logsigmoid | Log_unit_density | Log_support_density _
     | Sqrt | Relu | Step | Erf | Erfinv), [x] -> shape_of x
-  | (Types.Add | Sub | Mul | Div | Max2), [x; _] -> shape_of x
+  | (Types.Add | Sub | Mul | Div | Max2 | Mask), [x; _] -> shape_of x
   | (Sum_axis axis | Max_axis axis | Argmax_axis axis), [x] ->
     let s = shape_of x in
     let r = Array.length s in
@@ -427,11 +435,11 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
        record_alloc on;
        record_kernel pname on (fun () ->
        (match p, vs with
-        | (Neg | Exp | Log | Logsigmoid | Log_unit_density
+        | (Neg | Exp | Log | Logsigmoid | Log_unit_density | Log_support_density _
           | Sqrt | Relu | Step | Erf | Erfinv), [x] ->
           Kernel.Naive.map1 ~f:(map1_f p) ~src:x.buf ~view:x.view ~dst;
           Tensor.of_buf dst (Ndview.contiguous os)
-        | (Add | Sub | Mul | Div | Max2), [x; y] ->
+        | (Add | Sub | Mul | Div | Max2 | Mask), [x; y] ->
           Kernel.Naive.map2 ~f:(map2_f p) ~src1:x.buf ~view1:x.view
             ~src2:y.buf ~view2:y.view ~dst;
           Tensor.of_buf dst (Ndview.contiguous os)

@@ -96,6 +96,9 @@ and forward_prim (p : prim) (fwd_args : (bindings * expr * expr) list) :
       let bs_v, v = ensure_var "p" px in
       (* tx - tx is the shape-polymorphic zero available in the current IR. *)
       (bs @ bs_v, prim Log_unit_density [v], prim Sub [tx; tx])
+  | (Log_support_density _ as p), [ (bs, px, tx) ] ->
+      let bs_v, v = ensure_var "p" px in
+      (bs @ bs_v, prim p [v], prim Sub [tx; tx])
   | Sqrt, [ (bs, px, tx) ] ->
       (* residual: sqrt(x); tangent = tx / (sqrt(x) + sqrt(x)) *)
       let bs_v, v = ensure_var "p" px in
@@ -152,6 +155,8 @@ and forward_prim (p : prim) (fwd_args : (bindings * expr * expr) list) :
       (bs1 @ bs2, prim Add [ p1; p2 ], prim Add [ t1; t2 ])
   | Sub, [ (bs1, p1, t1); (bs2, p2, t2) ] ->
       (bs1 @ bs2, prim Sub [ p1; p2 ], prim Sub [ t1; t2 ])
+  | Mask, [ (bs1, p1, t1); (bs2, p2, _t2) ] ->
+      (bs1 @ bs2, prim Mask [p1; p2], prim Mask [t1; p2])
   (* === map2 nonlinear === *)
   | Mul, [ (bs1, p1, t1); (bs2, p2, t2) ] ->
       (* d(x*y) = dx*y + x*dy — need residuals x and y *)
