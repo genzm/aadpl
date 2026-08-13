@@ -78,9 +78,9 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
         Eval.eval env' fwd
       end
       else begin
-        (* Batch evaluation: broadcast all scalar env values and Const nodes
-         to frame shape, then eval once — G elements processed in one call. *)
-        let broadcast_to_frame (t : Tensor.t) : Tensor.t =
+        (* Only fwd's free variables are imported from env.  A referenced value
+           must lead-agree with frame; unrelated bindings may have any shape. *)
+        let broadcast_to_frame name (t : Tensor.t) : Tensor.t =
           let shape = t.view.Ndview.shape in
           if shape = frame then t
           else if Array.length shape <= Array.length frame
@@ -91,13 +91,33 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
               value := Tensor.broadcast !value ~axis ~size:frame.(axis)
             done;
             !value
-          else t (* unrelated environment bindings are not referenced by fwd *)
+          else
+            failwith
+              (Printf.sprintf
+                 "batch fwd: variable '%s' does not lead-agree with frame" name)
         in
+        let free_vars expression =
+          let rec go bound variables = function
+            | Types.Var (_, name) ->
+                if List.mem name bound || List.mem name variables then variables
+                else name :: variables
+            | Const _ -> variables
+            | Prim (_, _, args) | Rank (_, _, _, args) ->
+                List.fold_left (go bound) variables args
+            | Let (_, name, rhs, body) ->
+                go (name :: bound) (go bound variables rhs) body
+            | Sample _ | Score _ -> variables
+          in
+          go [] [] expression
+        in
+        let needed = List.filter (fun name -> name <> fwd_var) (free_vars fwd) in
         let env' =
-          (fwd_var, u) :: List.map (fun (s, v) -> (s, broadcast_to_frame v)) env
+          (fwd_var, u) :: List.filter_map (fun name ->
+            Option.map (fun value -> name, broadcast_to_frame name value)
+              (List.assoc_opt name env)) needed
         in
         let rec lift_consts = function
-          | Types.Const (l, v) -> Types.Const (l, broadcast_to_frame v)
+          | Types.Const (l, v) -> Types.Const (l, broadcast_to_frame "<const>" v)
           | Var _ as e -> e
           | Prim (l, p, args) -> Prim (l, p, List.map lift_consts args)
           | Let (l, s, e1, e2) -> Let (l, s, lift_consts e1, lift_consts e2)

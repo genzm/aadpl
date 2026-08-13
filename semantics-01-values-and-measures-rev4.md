@@ -328,6 +328,10 @@ $$⟦P⟧ = (\mathcal{T}_P,\ p,\ w), \qquad \mu(dt) = w(t)\,p(t)\,\lambda_{\math
 
 trace 型の部分集合 $S \subseteq \mathcal{T}$ に対する操作を定める。
 
+site の扱いは四分割する: **条件づける（観測）・積分する・最大化する・
+trace に残す**。条件づけは `Score` / observed slot、積分は `Marginalize`、
+最大化は意味論外の optimizer であり、残す site だけが出力 trace に残る。
+
 **測度の操作（意味論の構成子）**
 
 $$

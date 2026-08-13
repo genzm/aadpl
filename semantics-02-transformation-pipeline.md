@@ -326,6 +326,16 @@ $$\texttt{key} = (\text{名前空間},\ \texttt{run\_key}), \qquad \texttt{ctr} 
 | `ns_guide` | guide の基底乱数（`noise_env`） |
 | `ns_data` | ミニバッチのシャッフル、データの確率的前処理 |
 
+`ns_data` 内の counter 用途を次で予約する。同じ `run_key` で用途間の
+乱数が重ならないことが目的であり、追加用途はこの表を更新してから使う。
+
+| `site_id` | `component` | 用途 |
+|---:|---:|---|
+| 0 | 1 | MNIST シャッフル |
+| 1 | 1 | MNIST 動的二値化 |
+| 2 | 1 | 合成データ（Phase 12 GLMM） |
+| 16–31 | 1 | Phase 13 パラメトリックブートストラップ用に予約 |
+
 **`ns_model` と `ns_guide` を分けることが必須である。** 同一にすると、同じ `run_key`・同じ `site_id` に対して model の事前抽出と guide の基底乱数が**同一の一様乱数になる**。ELBO を回すだけなら model の乱数を引かないので無害だが、**SBC（事前から引く → データ生成 → 推論 → 順位の一様性）で順位が壊れる**。しかもバグではなく「相関」として出るため、原因特定が最悪の部類になる。
 
 $\Inv$ **counter の構造的単射性**: $(\mathit{site\_id}, \mathit{component}, \mathit{frame\_index}) \mapsto \texttt{ctr}$ が単射。各フィールドに割り当てたビット幅を仕様として書き、**実際に使う最大値がその範囲に収まることを検査する**。
@@ -339,6 +349,12 @@ $\Inv$ **counter の構造的単射性**: $(\mathit{site\_id}, \mathit{component
 `make_ctr` はこの範囲を入口で検査する。境界テストは MNIST 動的二値化の最大値付近 `47_039_999` / `47_040_000` と、各フィールドの実装上限を含む。
 
 > 現に、MNIST の動的二値化は $\mathit{frame\_index} = \mathit{source} \times 784 + \mathit{col}$ を使い、最大 $4.7\times10^7$（26 ビット）に達する。単射性のテストが $10^6$ までしか見ていないなら、この用途は仕様の外にある。
+
+**手続き軸の規約**: 複製・パーティクル・求積節点の軸は frame の
+先頭側へ、外側から `[replication; particle/node; existing axes...]` の順で
+積む。参加する観測・パラメータも同じ手続き軸を明示的に持たせる。
+`simulate` の分布パラメータは frame と leading agreement する場合だけ
+後方へ broadcast し、参照された非leading形状はその場で拒否する。
 
 $\Inv$ **coupling**: $\theta$（`fwd` の係数）を摂動しても、引かれる一様乱数列が変わらない。これが pathwise 勾配と共通乱数による有限差分照合の根拠である。
 

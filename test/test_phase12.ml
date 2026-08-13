@@ -129,8 +129,13 @@ let test_symbolic_declared_support () =
       [("u", const (scalar endpoint))] in
     check_raises "assess_expr rejects Uniform endpoint"
       (Ast.Eval.Eval_error (loc, "value outside declared support"))
-      (fun () -> ignore (Ast.Eval.eval [] symbolic)))
-    [0.0; 1.0]
+    (fun () -> ignore (Ast.Eval.eval [] symbolic)))
+    [0.0; 1.0];
+  let guarded = Prim (loc, Log_support_density S_positive,
+    [const (scalar (-1.0))]) in
+  check_raises "JVP preserves support location"
+    (Ast.Eval.Eval_error (loc, "value outside declared support"))
+    (fun () -> ignore (Ast.Jvp.jvp_eval [] guarded))
 
 let test_support_declarations () =
   let distributions =
@@ -621,6 +626,23 @@ let test_leading_frame_hierarchical_coupling () =
         true (value actual i = value expected i)
     done) sites
 
+let test_batch_fwd_rejects_nonleading_reference () =
+  let expression = sample "z" [|2; 3|]
+    (Ast.Normal.normal ~mu:"bad_mu" ~sigma:"sigma")
+    |> Transform.Expand_rank.expand
+         ~senv:[("bad_mu", [|3|]); ("sigma", [||])] in
+  check_raises "referenced env shape must lead-agree"
+    (Failure "batch fwd: variable 'bad_mu' does not lead-agree with frame")
+    (fun () -> ignore (Ast.Simulate.simulate ~run_key:168L
+      [("bad_mu", filled [|3|] 0.0); ("sigma", scalar 1.0);
+       ("unrelated", filled [|2; 3; 4|] 0.0)] expression));
+  let good = sample "z" [|2; 3|]
+    (Ast.Normal.normal ~mu:"mu" ~sigma:"sigma")
+    |> Transform.Expand_rank.expand ~senv:[("mu", [||]); ("sigma", [||])] in
+  ignore (Ast.Simulate.simulate ~run_key:168L
+    [("mu", scalar 0.0); ("sigma", scalar 1.0);
+     ("unrelated", filled [|3|] 0.0)] good)
+
 let test_hierarchical_vi_sbc_diagnostic () =
   let repetitions = 256 and groups = 6 and posterior_draws = 15 in
   let frame_n = [|repetitions|] and frame_ng = [|repetitions; groups|] in
@@ -777,7 +799,7 @@ let test_logistic_glmm_learning () =
       let eta = true_gamma *. xv +. value true_a group in
       let probability = if eta >= 0.0 then 1.0 /. (1.0 +. exp (-.eta))
         else let e = exp eta in e /. (1.0 +. e) in
-      let ctr = Prng.Threefry.make_ctr ~site_id:0 ~component:1 ~frame_index:i in
+      let ctr = Prng.Threefry.make_ctr ~site_id:2 ~component:1 ~frame_index:i in
       let bits, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
       View.Buf.set x.buf i xv;
       View.Buf.set y.buf i
@@ -931,6 +953,8 @@ let () =
       ( "12-6 hierarchical VI",
         [test_case "leading-frame coupling" `Quick
            test_leading_frame_hierarchical_coupling;
+         test_case "reject nonleading fwd variable" `Quick
+           test_batch_fwd_rejects_nonleading_reference;
          test_case "SBC stage 2 diagnostic" `Slow
            test_hierarchical_vi_sbc_diagnostic] );
       ( "12-7 logistic GLMM",

@@ -52,7 +52,7 @@ let rec jvp_eval (env : dual_env) (e : Types.expr) : dual =
     Eval.validate loc p vs;
     jvp_prim loc p ds
 
-and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
+and jvp_prim loc (p : Types.prim) (ds : dual list) : dual =
   match p, ds with
 
   (* --- map1: tangent = f'(x) * dx --- *)
@@ -102,7 +102,7 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
     (Tensor.make (shape_of x), zeros_like x)
 
   | Log_support_density support, [(x, _dx)] ->
-    Eval.validate Types.dummy_loc (Log_support_density support) [x];
+    Eval.validate loc (Log_support_density support) [x];
     (Tensor.make (shape_of x), zeros_like x)
 
   | Sqrt, [(x, dx)] ->
