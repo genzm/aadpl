@@ -15,7 +15,7 @@ let normal ~mu ~sigma : dist =
   let one = mk_scalar 1.0 in
   let two = mk_scalar 2.0 in
   D_pushforward {
-    fwd_var = "_u";
+    fwd_var = "%d.u";
     fwd =
       (* μ + σ * √2 * erfinv(2u - 1) *)
       prim Add [
@@ -24,18 +24,18 @@ let normal ~mu ~sigma : dist =
           var sigma;
           prim Mul [
             sqrt2;
-            prim Erfinv [prim Sub [prim Mul [two; var "_u"]; one]]
+            prim Erfinv [prim Sub [prim Mul [two; var "%d.u"]; one]]
           ]
         ]
       ];
-    inv_var = "_x";
+    inv_var = "%d.x";
     inv =
       (* 0.5 * (1 + erf((x - μ) / (σ√2))) *)
       prim Mul [
         half;
         prim Add [
           one;
-          prim Erf [prim Div [prim Sub [var "_x"; var mu];
+          prim Erf [prim Div [prim Sub [var "%d.x"; var mu];
                               prim Mul [var sigma; sqrt2]]]
         ]
       ];

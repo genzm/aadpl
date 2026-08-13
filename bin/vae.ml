@@ -77,7 +77,7 @@ let make_program ~batch ~latent ~hidden ~pixels =
     [("x", [|batch; pixels|]); ("prior_mu", [||]); ("prior_sigma", [||])]
   in
   let program = Transform.build_elbo
-    ~model ~guide ~env_shapes:(param_shapes @ data_shapes) in
+    ~observed:[] ~model ~guide ~env_shapes:(param_shapes @ data_shapes) in
   let average_elbo =
     prim Mul [const (scalar (1.0 /. float_of_int batch)); program.elbo]
   in

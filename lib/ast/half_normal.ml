@@ -14,14 +14,14 @@ let half_normal ~sigma : dist =
   let sqrt2 = mk_scalar (sqrt 2.0) in
   D_pushforward
     {
-      fwd_var = "_u";
+      fwd_var = "%d.u";
       fwd =
         prim Mul
-          [var sigma; prim Mul [sqrt2; prim Erfinv [var "_u"]]];
-      inv_var = "_x";
+          [var sigma; prim Mul [sqrt2; prim Erfinv [var "%d.u"]]];
+      inv_var = "%d.x";
       inv =
         prim Erf
-          [prim Div [var "_x"; prim Mul [var sigma; sqrt2]]];
+          [prim Div [var "%d.x"; prim Mul [var sigma; sqrt2]]];
       support = S_positive;
       base = D_uniform;
     }

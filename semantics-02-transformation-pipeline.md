@@ -131,7 +131,7 @@ guide 部分言語の妥当性を**一つの述語に集約する**。個別の�
 
 - $\Pr$: `check_trace_compat model guide`
 - $\Post$: 各 guide site $n$ について $\mathrm{supp}(q_n) \subseteq \mathrm{supp}(p_n)$
-- 台は分布の構成木から `Sites.dist_support` が導出する。`D_pushforward` は意味情報として像の台を保持し、Normal は `Real`、HalfNormal は `Positive` を与える
+- 台は分布の構成木から `Sites.dist_support` が読む。ただし一般の写像の像は導出不能なので、`D_pushforward.support` は**分布ライブラリ定義者による表明**である。Normal は `Real`、HalfNormal は `Positive` を表明し、Uniform からの標本が表明した台に入ることをライブラリ検査で守る
 - 違反は guide site の loc で落とす。特に model の HalfNormal site に Normal guide を当てることを拒否する
 
 ### 2.2 式変換
@@ -234,15 +234,16 @@ trace 上の対数密度を**式として**構成する。
 ### 3.1 推論構築（`build_elbo`）
 
 ```
-入力: model, guide, env_shapes
+入力: model, guide, observed, env_shapes
 
-  1. check_sites model
+  1. model_sites ← collect_sites model
   2. check_guide guide                    (check_sites guide を内包)
-  3. check_trace_compat ~model ~guide
+  3. sites ← collect_sites guide
+  4. check_trace_compat (model_sites = sites ⊎ observed)
+     check_support_compat model_sites sites
   ─────────────────────────────── 以降、事前条件は満たされている
-  4. sites   ← collect_sites guide        (採番の唯一の定義点)
-  5. noise   ← [(%u.n, frame) | n ∈ sites]
-     slots   ← [(n, Var %tr.n) | n ∈ sites]
+  5. noise ← [(%u.n, frame) | n ∈ sites]
+     slots ← [(n, Var %tr.n) | n ∈ sites] ∪ observed
 
      ┌── 値の系統（展開前） ──────────┐   ┌── 密度の系統（展開後） ────┐
   6. │ guide_r  ← reparam ~sites guide │ 7.│ model_e ← expand model      │
@@ -259,7 +260,7 @@ trace 上の対数密度を**式として**構成する。
 
 **6 と 7 が別系統であることが、この設計の非自明な点である**（§1.1）。6 は `Rank(0,…)` を生成し、7 は `Rank` を拒否する。8 で合流し、9 で全体を再展開して整合する。
 
-$\Post$: `elbo` は `Sample` / `Score` を含まず、自由変数は `noise ∪ env_shapes` の名前のみ。
+$\Post$: `elbo` は `Sample` / `Score` を含まず、自由変数は `noise ∪ env_shapes` の名前のみ。guide に現れる site が潜在、`observed` から式スロットを受ける model-only site が観測であり、この二集合は互いに素で model site 全体を分割する。Phase 12 では観測 site は連続分布に限る。
 
 ### 3.2 微分（`grad`）
 
@@ -343,13 +344,15 @@ $\Inv$ **coupling**: $\theta$（`fwd` の係数）を摂動しても、引かれ
 
 ## 5. site 表
 
-$$\texttt{site} = \{\ \texttt{name};\ \texttt{id};\ \texttt{frame};\ \texttt{kind}\ \}$$
+$$\texttt{site} = \{\ \texttt{name};\ \texttt{id};\ \texttt{loc};\ \texttt{frame};\ \texttt{kind};\ \texttt{dist}\ \}$$
 
 **`collect_sites` が静的サイト走査と採番の唯一の定義点である。** `simulate` / `reparam` / `elim_samples` / `build_elbo` / `draw_noise` / 学習ループは、すべてこの表を引く。
 
 - `id` は走査順に 0 から。Threefry の $\mathit{site\_id}$ に直結するため、**走査順を変えると乱数列が変わる**
 - `frame` は plate の宣言そのもの。`Sample` ノードに明示的に載る
 - `kind` は $T(\mathrm{Fin}\,n) = \mathbf 0$ の判定に使う。**`D_pushforward` は base の `kind` を継承する**——押し出しは可微分性を作らない
+- `loc` は support / 観測 / 列挙の静的・実行時エラーを元の site に帰属させる
+- `dist` は support 検査と Phase 13 の `Marginalize` が参照する。site を必要とする処理が式を独自走査してはならない
 
 $\Inv$: **`kind` は構成から導出する。手で持たせない**（第1枚 (D3)）。
 

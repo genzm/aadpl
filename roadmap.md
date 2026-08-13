@@ -422,6 +422,8 @@ Gamma / Beta / Dirichlet、または一般の切断正規が必要になった�
 - 内積等式（階層確率プログラム）
 - **SBC**（事前から引く → データ生成 → 推論 → 順位の一様性）
 - HalfNormal の逆写像・閉形式密度・正規化・FD
+- 観測 site は `build_elbo ~observed` で model site を潜在 ⊎ 観測に
+  分割する。Phase 12 では連続観測のみ
 
 ---
 

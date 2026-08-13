@@ -100,7 +100,8 @@ let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
         Some "Scatter_select_add: index is tangent-dependent"
       else check_args [a]
     (* nonlinear map1/map2 must not have tangent-dependent args *)
-    | (Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv), [a] ->
+    | (Exp | Log | Logsigmoid | Log_unit_density
+      | Sqrt | Relu | Step | Erf | Erfinv), [a] ->
       if is_dep a then
         Some (Format.asprintf "%a: argument is tangent-dependent (nonlinear)"
                 pp_prim p)

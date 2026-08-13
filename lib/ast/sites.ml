@@ -2,7 +2,14 @@ open Types
 open View
 
 type kind = [ `Cont | `Disc ]
-type site = { name : string; id : int; frame : int array; kind : kind }
+type site = {
+  name : string;
+  id : int;
+  loc : loc;
+  frame : int array;
+  kind : kind;
+  dist : dist;
+}
 
 let noise_name_of_name name = "%u." ^ name
 let trace_name_of_name name = "%tr." ^ name
@@ -31,6 +38,14 @@ let rec support_subset left right =
          support_subset la ra && support_subset lb rb
      | _ -> false
 
+let support_contains support value =
+  match support with
+  | S_real -> Float.is_finite value
+  | S_positive -> Float.is_finite value && value > 0.0
+  | S_unit_interval -> value > 0.0 && value < 1.0
+  | S_finite -> Float.is_finite value && value = Float.round value
+  | S_product _ -> false
+
 (* The sole definition of static site traversal and numbering. *)
 let collect_sites (e : expr) : site list =
   (* Duplicate names would alias both the counter and generated %u/%tr names. *)
@@ -38,8 +53,9 @@ let collect_sites (e : expr) : site list =
   let sites = ref [] in
   let next = ref 0 in
   let rec walk = function
-    | Sample (_, name, frame, dist) ->
-        sites := { name; id = !next; frame; kind = dist_kind dist } :: !sites;
+    | Sample (loc, name, frame, dist) ->
+        sites := { name; id = !next; loc; frame; kind = dist_kind dist; dist }
+          :: !sites;
         incr next;
         walk_dist dist
     | Score (_, e) -> walk e

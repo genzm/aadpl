@@ -104,7 +104,7 @@ let test_assess_two_frames () =
 let test_all_parameter_fd () =
   let model, guide, param_shapes, data_shapes = vae ~batch:3 ~latent:2 ~obs:4 in
   let program = Transform.build_elbo
-    ~model ~guide ~env_shapes:(param_shapes @ data_shapes) in
+    ~observed:[] ~model ~guide ~env_shapes:(param_shapes @ data_shapes) in
   let gp = Transform.grad ~param_shapes
     ~data_shapes:(program.noise @ data_shapes) program.elbo in
   let params = parameters () in

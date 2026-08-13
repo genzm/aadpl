@@ -17,7 +17,8 @@ type viewspec = viewop list              (* applied left-to-right *)
 
 type prim =
   (* map1 *)
-  | Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv
+  | Neg | Exp | Log | Logsigmoid | Log_unit_density
+  | Sqrt | Relu | Step | Erf | Erfinv
   (* map2 — require shape match *)
   | Add | Sub | Mul | Div | Max2
   (* reduce *)
@@ -49,6 +50,8 @@ type expr =
 and value = View.Tensor.t   (* future: variant with dtype *)
 
 and support =
+  (* A D_pushforward support is an assertion supplied by the distribution
+     library author; arbitrary expression images cannot be derived generally. *)
   | S_real
   | S_positive
   | S_unit_interval
@@ -138,6 +141,7 @@ let pp_prim fmt = function
   | Exp -> Format.fprintf fmt "exp"
   | Log -> Format.fprintf fmt "log"
   | Logsigmoid -> Format.fprintf fmt "logsigmoid"
+  | Log_unit_density -> Format.fprintf fmt "log_unit_density"
   | Sqrt -> Format.fprintf fmt "sqrt"
   | Relu -> Format.fprintf fmt "relu"
   | Step -> Format.fprintf fmt "step"

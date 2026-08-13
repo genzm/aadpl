@@ -95,9 +95,10 @@ and subst_dist ~from ~to_ = function
    would auto-generate bindings with the same names, causing Unzip collisions.
 
    inv_var is renamed to a gensym'd name for the same reason. *)
-let rec log_density_raw dist x =
+let rec log_density_raw loc dist x =
   match dist with
-  | D_uniform -> None
+  | D_uniform ->
+      Some (Prim (loc, Log_unit_density, [x]))
   | D_categorical _ ->
       failwith
         "assess_expr: D_categorical log-density not yet implemented (Phase 12+)"
@@ -127,7 +128,7 @@ let rec log_density_raw dist x =
       (* u = inv(x), jac = d(inv)/dx *)
       let u_var = Forward.gensym "u" in
       let jac_var = Forward.gensym "jac" in
-      let base_ld = log_density_raw base (var u_var) in
+      let base_ld = log_density_raw loc base (var u_var) in
       let log_jac = prim Log [ var jac_var ] in
       let ld =
         match base_ld with
@@ -141,8 +142,8 @@ let rec log_density_raw dist x =
 (* Build log-density expression, handling frame broadcasting.
    For frame samples, wraps the raw expression in Rank(0,...) + expand
    so scalar constants and env variables broadcast against frame-shaped inputs. *)
-let log_density_expr ~env_shapes _frame dist x =
-  match log_density_raw dist x with
+let log_density_expr ~env_shapes ~loc _frame dist x =
+  match log_density_raw loc dist x with
   | None -> None
   | Some raw ->
       let wrapped = Reparam.wrap_rank0 raw in
@@ -178,16 +179,17 @@ let assess_expr ?(ns = "a.") ~(env_shapes : (string * int array) list)
             let value = rewrite senv e in
             let shape = Expand_rank.infer_shape senv value in
             if shape = [||] then value else sum_frame shape value
-        | Sample (_, name, frame, dist) -> density_of senv name frame dist
+        | Sample (loc, name, frame, dist) ->
+            density_of senv loc name frame dist
         | Rank _ -> failwith "assess_expr: Rank must be expanded first"
       and go_bind senv e =
         match e with
-        | Sample (_, name, frame, dist) ->
-            (List.assoc name slots, density_of senv name frame dist)
+        | Sample (loc, name, frame, dist) ->
+            (List.assoc name slots, density_of senv loc name frame dist)
         | _ -> (rewrite senv e, go senv e)
-      and density_of senv name frame dist =
+      and density_of senv loc name frame dist =
         let slot = List.assoc name slots in
-        match log_density_expr ~env_shapes:senv frame dist slot with
+        match log_density_expr ~env_shapes:senv ~loc frame dist slot with
         | None -> mk_scalar 0.0
         | Some ld -> if frame = [||] then ld else sum_frame frame ld
       and rewrite senv e =

@@ -200,38 +200,52 @@ exception Trace_mismatch of string
 
 exception Support_mismatch of loc * string
 
-let check_support_compat ~model ~guide =
-  let rec collect acc = function
-    | Sample (loc, name, _, dist) -> (name, (loc, dist)) :: acc
-    | Let (_, _, e1, e2) -> collect (collect acc e1) e2
-    | Prim (_, _, args) | Rank (_, _, _, args) -> List.fold_left collect acc args
-    | Score (_, e) -> collect acc e
-    | Const _ | Var _ -> acc
-  in
-  let model_sites = collect [] model in
+let check_support_compat ~model_sites ~guide_sites =
   List.iter
-    (fun (name, (loc, guide_dist)) ->
-      match List.assoc_opt name model_sites with
+    (fun (guide_site : Ast.Sites.site) ->
+      match List.find_opt (fun site ->
+        site.Ast.Sites.name = guide_site.name) model_sites with
       | None -> ()
-      | Some (_, model_dist) ->
-          let guide_support = Ast.Sites.dist_support guide_dist in
-          let model_support = Ast.Sites.dist_support model_dist in
+      | Some model_site ->
+          let guide_support = Ast.Sites.dist_support guide_site.dist in
+          let model_support = Ast.Sites.dist_support model_site.dist in
           if not (Ast.Sites.support_subset guide_support model_support) then
             raise
               (Support_mismatch
-                 (loc, Printf.sprintf
+                 (guide_site.loc, Printf.sprintf
                     "guide support is not contained in model support at site '%s'"
-                    name)))
-    (collect [] guide)
+                    guide_site.name)))
+    guide_sites
 
-let check_trace_compat ~model ~guide =
-  let model_sites = Ast.Sites.collect_sites model in
-  let guide_sites = Ast.Sites.collect_sites guide in
+let check_trace_compat_sites ?(observed = []) ~model_sites ~guide_sites () =
   let pp_frame frame =
     String.concat "," (List.map string_of_int (Array.to_list frame))
   in
+  let observed_names = List.map fst observed in
+  if List.length observed_names <>
+     List.length (List.sort_uniq String.compare observed_names) then
+    raise (Trace_mismatch "duplicate observed site name");
+  List.iter
+    (fun name ->
+      match List.find_opt (fun site ->
+        site.Ast.Sites.name = name) model_sites with
+      | None ->
+          raise
+            (Trace_mismatch
+               (Printf.sprintf "observed site '%s' not found in model" name))
+      | Some site when site.kind = `Disc ->
+          raise
+            (Trace_mismatch
+               (Printf.sprintf "observed site '%s' must be continuous" name))
+      | Some _ -> ())
+    observed_names;
   List.iter
     (fun (guide_site : Ast.Sites.site) ->
+      if List.mem guide_site.name observed_names then
+        raise
+          (Trace_mismatch
+             (Printf.sprintf "observed site '%s' also appears in guide"
+                guide_site.name));
       match
         List.find_opt
           (fun site -> site.Ast.Sites.name = guide_site.name)
@@ -254,7 +268,7 @@ let check_trace_compat ~model ~guide =
     guide_sites;
   List.iter
     (fun (model_site : Ast.Sites.site) ->
-      match
+      if List.mem model_site.name observed_names then () else match
         List.find_opt
           (fun site -> site.Ast.Sites.name = model_site.name)
           guide_sites
@@ -266,3 +280,8 @@ let check_trace_compat ~model ~guide =
                   model_site.name))
       | Some _ -> ())
     model_sites
+
+let check_trace_compat ~model ~guide =
+  check_trace_compat_sites
+    ~model_sites:(Ast.Sites.collect_sites model)
+    ~guide_sites:(Ast.Sites.collect_sites guide) ()

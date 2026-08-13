@@ -32,6 +32,18 @@ let frame_cell frame i (t : Tensor.t) =
     scalar (Buf.get t.buf (Ndview.index_of t.view index))
   end
 
+exception Support_error of Types.loc * string
+
+let check_support loc name dist (x : Tensor.t) =
+  let support = Sites.dist_support dist in
+  let n = Ndview.numel x.view in
+  for i = 0 to n - 1 do
+    if not (Sites.support_contains support (Buf.get x.buf i)) then
+      raise
+        (Support_error
+           (loc, Printf.sprintf "value outside support at site '%s'" name))
+  done
+
 (* Compute log density of a value under a distribution.
    For D_pushforward, uses JVP to compute the Jacobian of inv. *)
 let rec log_density (dist : Types.dist) (x : Tensor.t)
@@ -99,8 +111,9 @@ let assess (env : Eval.env) (e : Types.expr)
       let v = go env e in
       log_density_acc := !log_density_acc +. sum_all v;
       scalar 0.0
-    | Sample (_, name, frame, dist) ->
+    | Sample (loc, name, frame, dist) ->
       let v = List.assoc name trace in
+      check_support loc name dist v;
       if frame = [||] then begin
         let ld = log_density dist v env in
         log_density_acc := !log_density_acc +. ld

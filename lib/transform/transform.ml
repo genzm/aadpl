@@ -60,13 +60,24 @@ type elbo_program = {
 let noise_env (program : elbo_program) ~run_key =
   Ast.Sites.draw_noise ~namespace:Prng.Threefry.ns_guide ~run_key program.sites
 
-let build_elbo ~model ~guide ~(env_shapes : (string * int array) list) :
+let build_elbo ~(observed : (string * expr) list) ~model ~guide
+    ~(env_shapes : (string * int array) list) :
     elbo_program =
-  check_sites model;
   Reparam.check_guide guide;
-  Reparam.check_trace_compat ~model ~guide;
-  Reparam.check_support_compat ~model ~guide;
+  let model_sites = Ast.Sites.collect_sites model in
   let sites = Ast.Sites.collect_sites guide in
+  Reparam.check_trace_compat_sites ~observed ~model_sites ~guide_sites:sites ();
+  Reparam.check_support_compat ~model_sites ~guide_sites:sites;
+  List.iter
+    (fun (name, value) ->
+      let site = Ast.Sites.find name model_sites in
+      let shape = Expand_rank.infer_shape env_shapes value in
+      if shape <> site.frame then
+        raise
+          (Reparam.Trace_mismatch
+             (Printf.sprintf "observed site '%s' shape does not match frame"
+                name)))
+    observed;
   let noise =
     List.map
       (fun (site : Ast.Sites.site) -> (Ast.Sites.noise_name site, site.frame))
@@ -76,7 +87,7 @@ let build_elbo ~model ~guide ~(env_shapes : (string * int array) list) :
     List.map
       (fun (site : Ast.Sites.site) ->
         (site.name, var (Ast.Sites.trace_name site)))
-      sites
+      sites @ observed
   in
   let guide_r = Reparam.reparam ~sites guide in
   let bindings, _ = Reparam.elim_samples ~sites guide_r in

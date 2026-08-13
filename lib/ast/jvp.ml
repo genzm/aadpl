@@ -98,6 +98,9 @@ and jvp_prim _loc (p : Types.prim) (ds : dual list) : dual =
     (Tensor.of_buf dst_p (Ndview.contiguous os),
      t_mul (Tensor.of_buf dst_d (Ndview.contiguous os)) dx)
 
+  | Log_unit_density, [(x, _dx)] ->
+    (Tensor.make (shape_of x), zeros_like x)
+
   | Sqrt, [(x, dx)] ->
     let os = shape_of x in
     let on = Array.fold_left ( * ) 1 os in
