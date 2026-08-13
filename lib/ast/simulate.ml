@@ -81,13 +81,17 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
         (* Batch evaluation: broadcast all scalar env values and Const nodes
          to frame shape, then eval once — G elements processed in one call. *)
         let broadcast_to_frame (t : Tensor.t) : Tensor.t =
-          if t.view.Ndview.shape = [||] then
-            Array.fold_left
-              (fun value size ->
-                Tensor.broadcast value
-                  ~axis:(Array.length value.view.Ndview.shape) ~size)
-              t frame
-          else t
+          let shape = t.view.Ndview.shape in
+          if shape = frame then t
+          else if Array.length shape <= Array.length frame
+            && Array.for_all2 ( = ) shape (Array.sub frame 0 (Array.length shape))
+          then
+            let value = ref t in
+            for axis = Array.length shape to Array.length frame - 1 do
+              value := Tensor.broadcast !value ~axis ~size:frame.(axis)
+            done;
+            !value
+          else t (* unrelated environment bindings are not referenced by fwd *)
         in
         let env' =
           (fwd_var, u) :: List.map (fun (s, v) -> (s, broadcast_to_frame v)) env

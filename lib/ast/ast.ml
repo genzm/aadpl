@@ -5,4 +5,5 @@ module Jvp = Jvp
 module Simulate = Simulate
 module Normal = Normal
 module Half_normal = Half_normal
+module Log_normal = Log_normal
 module Assess = Assess

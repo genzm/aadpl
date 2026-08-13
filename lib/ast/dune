@@ -1,5 +1,5 @@
 (library
  (name ast)
  (public_name lang.ast)
- (modules ast types sites eval jvp simulate normal half_normal assess)
+ (modules ast types sites eval jvp simulate normal half_normal log_normal assess)
  (libraries view kernel blas_stub prng unix))

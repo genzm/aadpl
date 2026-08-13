@@ -78,6 +78,18 @@ let test_half_normal_sigma_fd () =
     (List.assoc "sigma" gradient.grads) |> fun t -> value t 0 in
   check (float 1e-7) "sigma FD" fd ad
 
+let test_log_normal_density () =
+  let mu = 0.3 and sigma = 0.7 and x = 1.4 in
+  let dist = Ast.Log_normal.log_normal ~mu:"mu" ~sigma:"sigma" in
+  let actual = Ast.Assess.log_density dist (scalar x)
+    [("mu", scalar mu); ("sigma", scalar sigma)] in
+  let z = (log x -. mu) /. sigma in
+  let expected = -.log x -. log sigma -. 0.5 *. log (2.0 *. Float.pi)
+    -. 0.5 *. z *. z in
+  check (float 1e-12) "nested pushforward density" expected actual;
+  check bool "positive declared support" true
+    (Ast.Sites.dist_support dist = S_positive)
+
 let test_support_runtime () =
   let loc = {file = "support"; line = 12; col = 3} in
   let program = Sample (loc, "tau", [||],
@@ -382,6 +394,13 @@ let check_uniform_ranks label histogram =
   check bool (Printf.sprintf "%s ranks (chi-square %.3f)" label chi_square)
     true (chi_square < 38.0)
 
+let rank_chi_square histogram =
+  let total = Array.fold_left ( + ) 0 histogram in
+  let expected = float_of_int total /. float_of_int (Array.length histogram) in
+  Array.fold_left (fun sum count ->
+    let d = float_of_int count -. expected in sum +. d *. d /. expected)
+    0.0 histogram
+
 let posterior_parameters obs_scale y =
   let denominator = 1.0 +. obs_scale *. obs_scale in
   Array.map (fun x -> x /. denominator) y,
@@ -552,6 +571,163 @@ let test_ragged_mask_invariance () =
     check bool (name ^ " gradient bit invariant") true
       (expected = List.assoc name grads_b)) grads_a
 
+let hierarchical_observed_program frame_n frame_ng =
+  let model =
+    let_ "mu" (sample "mu" frame_n
+      (Ast.Normal.normal ~mu:"prior_mu" ~sigma:"prior_mu_scale"))
+      (let_ "tau" (sample "tau" frame_n
+        (Ast.Half_normal.half_normal ~sigma:"prior_tau_scale"))
+        (let_ "a" (sample "a" frame_ng
+          (Ast.Normal.normal ~mu:"mu" ~sigma:"tau"))
+          (sample "y" frame_ng
+            (Ast.Normal.normal ~mu:"a" ~sigma:"obs_scale"))))
+  in
+  let guide =
+    let_ "q_mu_scale" (prim Exp [var "q_mu_rho"])
+      (let_ "mu" (sample "mu" frame_n
+        (Ast.Normal.normal ~mu:"q_mu_loc" ~sigma:"q_mu_scale"))
+        (let_ "q_tau_scale" (prim Exp [var "q_tau_rho"])
+          (let_ "tau" (sample "tau" frame_n
+            (Ast.Log_normal.log_normal ~mu:"q_tau_loc" ~sigma:"q_tau_scale"))
+            (let_ "q_a_scale" (prim Exp [var "q_a_rho"])
+              (sample "a" frame_ng
+                (Ast.Normal.normal ~mu:"q_a_loc" ~sigma:"q_a_scale"))))))
+  in
+  model, guide
+
+let test_leading_frame_hierarchical_coupling () =
+  let frame_n = [|2|] and frame_ng = [|2; 3|] in
+  let model, _ = hierarchical_observed_program frame_n frame_ng in
+  let shapes = [("prior_mu", [||]); ("prior_mu_scale", [||]);
+    ("prior_tau_scale", [||]); ("obs_scale", [||])] in
+  let env = [("prior_mu", scalar 0.0); ("prior_mu_scale", scalar 2.0);
+    ("prior_tau_scale", scalar 1.0); ("obs_scale", scalar 0.5)] in
+  let sites = Ast.Sites.collect_sites model in
+  let expanded = Transform.Expand_rank.expand ~senv:shapes model in
+  let _, trace, _ = Ast.Simulate.simulate ~sites ~run_key:169L env expanded in
+  let bindings, _ = Transform.Reparam.reparam ~sites model
+    |> Transform.Reparam.elim_samples ~sites in
+  let noise = Ast.Sites.draw_noise ~run_key:169L sites in
+  List.iter (fun site ->
+    let expression = Transform.Forward.wrap_bindings bindings
+      (var (Ast.Sites.trace_name site))
+      |> Transform.Expand_rank.expand ~senv:(shapes @ List.map
+        (fun (name, sample) ->
+          name, sample.View.Tensor.view.View.Ndview.shape) noise) in
+    let actual = Ast.Eval.eval (noise @ env) expression
+    and expected = List.assoc site.Ast.Sites.name trace in
+    for i = 0 to numel expected - 1 do
+      check bool (Printf.sprintf "%s[%d] leading-frame coupling" site.name i)
+        true (value actual i = value expected i)
+    done) sites
+
+let test_hierarchical_vi_sbc_diagnostic () =
+  let repetitions = 256 and groups = 6 and posterior_draws = 15 in
+  let frame_n = [|repetitions|] and frame_ng = [|repetitions; groups|] in
+  let model, guide = hierarchical_observed_program frame_n frame_ng in
+  let shapes = [
+    ("prior_mu", [||]); ("prior_mu_scale", [||]);
+    ("prior_tau_scale", [||]); ("obs_scale", [||]);
+    ("q_mu_loc", frame_n); ("q_mu_rho", frame_n);
+    ("q_tau_loc", frame_n); ("q_tau_rho", frame_n);
+    ("q_a_loc", frame_ng); ("q_a_rho", frame_ng); ("y_obs", frame_ng);
+  ] in
+  let fixed = [("prior_mu", scalar 0.0); ("prior_mu_scale", scalar 2.0);
+               ("prior_tau_scale", scalar 1.0); ("obs_scale", scalar 0.5)] in
+  let expanded_model = Transform.Expand_rank.expand ~senv:shapes model in
+  let _, generated, _ = Ast.Simulate.simulate ~run_key:170L fixed expanded_model in
+  let mu_true = extract_trace "mu" generated
+  and tau_true = extract_trace "tau" generated
+  and a_true = extract_trace "a" generated
+  and y = extract_trace "y" generated in
+  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+    ~model ~guide ~env_shapes:shapes in
+  let param_shapes = [("q_mu_loc", frame_n); ("q_mu_rho", frame_n);
+    ("q_tau_loc", frame_n); ("q_tau_rho", frame_n);
+    ("q_a_loc", frame_ng); ("q_a_rho", frame_ng)] in
+  let gp = Transform.grad ~param_shapes
+    ~data_shapes:(program.noise @ [("prior_mu", [||]);
+      ("prior_mu_scale", [||]); ("prior_tau_scale", [||]);
+      ("obs_scale", [||]); ("y_obs", frame_ng)]) program.elbo in
+  let params = [
+    ("q_mu_loc", filled frame_n 0.0); ("q_mu_rho", filled frame_n (log 0.8));
+    ("q_tau_loc", filled frame_n (log 0.8));
+    ("q_tau_rho", filled frame_n (log 0.35));
+    ("q_a_loc", tensor frame_ng (Array.init (numel y) (value y)));
+    ("q_a_rho", filled frame_ng (log 0.6));
+  ] in
+  let states = List.map (fun (name, parameter) ->
+    name, {m = filled parameter.View.Tensor.view.View.Ndview.shape 0.0;
+           v = filled parameter.View.Tensor.view.View.Ndview.shape 0.0}) params in
+  let eval step =
+    let env = Transform.noise_env program ~run_key:(Int64.of_int step)
+      @ params @ [("y_obs", y)] @ fixed in
+    Ast.Eval.eval_grad env ~primal_bindings:gp.primal_bindings
+      ~loss_body:gp.loss_body ~grad_bindings:gp.grad_bindings
+      ~grad_bodies:gp.grad_bodies
+  in
+  let initial, _ = eval 40_000 in
+  for step = 1 to 1200 do
+    let _, gradients = eval (40_000 + step) in
+    let learning_rate = if step <= 500 then 0.01 else 0.003 in
+    List.iter (fun (name, parameter) ->
+      adam_tensor_ascent ~step ~learning_rate (List.assoc name states) parameter
+        (List.assoc name gradients)) params
+  done;
+  let final, _ = eval 40_000 in
+  check bool "hierarchical ELBO improves" true (value final 0 > value initial 0);
+  let expanded_guide = Transform.Expand_rank.expand ~senv:shapes guide in
+  let posterior_env = params @ fixed in
+  let traces = List.init posterior_draws (fun draw ->
+    let _, trace, _ = Ast.Simulate.simulate
+      ~run_key:(Int64.of_int (50_000 + draw)) posterior_env expanded_guide in
+    trace) in
+  let draws name = List.map (extract_trace name) traces in
+  let mu_hist = rank_histogram (draws "mu") mu_true
+  and tau_hist = rank_histogram (draws "tau") tau_true
+  and a_hist = rank_histogram (draws "a") a_true in
+  let mu_chi = rank_chi_square mu_hist and tau_chi = rank_chi_square tau_hist
+  and a_chi = rank_chi_square a_hist in
+  let half_normal_ld x scale =
+    0.5 *. log (2.0 /. Float.pi) -. log scale -. 0.5 *. (x /. scale) ** 2.0 in
+  let joint_per_repetition trace =
+    let mu = extract_trace "mu" trace and tau = extract_trace "tau" trace
+    and a = extract_trace "a" trace in
+    tensor frame_n (Array.init repetitions (fun repetition ->
+      let total = ref (gaussian_log_density ~x:(value mu repetition)
+        ~mu:0.0 ~sigma:2.0 +. half_normal_ld (value tau repetition) 1.0) in
+      for group = 0 to groups - 1 do
+        let i = repetition * groups + group in
+        total := !total
+          +. gaussian_log_density ~x:(value a i) ~mu:(value mu repetition)
+               ~sigma:(value tau repetition)
+          +. gaussian_log_density ~x:(value y i) ~mu:(value a i) ~sigma:0.5
+      done;
+      !total))
+  in
+  let true_trace = [("mu", mu_true); ("tau", tau_true); ("a", a_true)] in
+  let joint_chi = rank_chi_square
+    (rank_histogram (List.map joint_per_repetition traces)
+       (joint_per_repetition true_trace)) in
+  let endpoint_coverage histogram =
+    let total = Array.fold_left ( + ) 0 histogram in
+    1.0 -. float_of_int (histogram.(0) + histogram.(Array.length histogram - 1))
+      /. float_of_int total in
+  let tau_bottom = float_of_int tau_hist.(0) /. float_of_int repetitions
+  and tau_top = float_of_int tau_hist.(posterior_draws)
+    /. float_of_int repetitions in
+  Printf.printf "\nSBC stage 2 diagnostic (not a completion criterion): \
+mu=%.3f tau=%.3f a=%.3f log_joint=%.3f; \
+tau rank=0/15 %.1f%%/%.1f%%, endpoint coverage mu/tau/a=%.1f%%/%.1f%%/%.1f%%\n"
+    mu_chi tau_chi a_chi joint_chi (100.0 *. tau_bottom) (100.0 *. tau_top)
+    (100.0 *. endpoint_coverage mu_hist)
+    (100.0 *. endpoint_coverage tau_hist)
+    (100.0 *. endpoint_coverage a_hist);
+  List.iter (fun (label, statistic) ->
+    check bool (label ^ " diagnostic finite") true (Float.is_finite statistic))
+    [("mu", mu_chi); ("tau", tau_chi); ("a", a_chi);
+     ("log joint", joint_chi)]
+
 let test_observed_site () =
   let model, guide = observed_program 3 in
   let shapes =
@@ -620,6 +796,7 @@ let () =
           test_case "closed density" `Quick test_half_normal_density;
           test_case "normalizes" `Slow test_half_normal_normalizes;
           test_case "sigma FD" `Quick test_half_normal_sigma_fd;
+          test_case "LogNormal density" `Quick test_log_normal_density;
           test_case "runtime support" `Quick test_support_runtime;
           test_case "symbolic declared support" `Quick
             test_symbolic_declared_support;
@@ -651,4 +828,9 @@ let () =
       ( "12-5 ragged masking",
         [test_case "padding is bit invisible" `Quick
            test_ragged_mask_invariance] );
+      ( "12-6 hierarchical VI",
+        [test_case "leading-frame coupling" `Quick
+           test_leading_frame_hierarchical_coupling;
+         test_case "SBC stage 2 diagnostic" `Slow
+           test_hierarchical_vi_sbc_diagnostic] );
     ]
