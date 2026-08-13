@@ -62,28 +62,20 @@ let test_elbo_eval () =
     "noise"
     [ ("%u.z", [||]) ]
     program.noise;
+  let guide_noise = Transform.noise_env program ~run_key:42L in
+  let model_noise = Ast.Sites.draw_noise ~run_key:42L program.sites in
+  check bool "guide/model namespaces differ" true
+    (scalar_val (List.assoc "%u.z" guide_noise)
+    <> scalar_val (List.assoc "%u.z" model_noise));
 
-  (* Get u from reparam'd guide (trace records the base uniform sample) *)
-  let guide_r = Transform.Reparam.reparam guide in
-  let senv = [ ("mu_g", [||]); ("sigma_g", [||]) ] in
-  let guide_re = Transform.Expand_rank.expand ~senv guide_r in
-  let _, trace_re, _ =
-    Ast.Simulate.simulate ~run_key:42L
-      [ ("mu_g", mu_g); ("sigma_g", sigma_g) ]
-      guide_re
-  in
-  let u = List.assoc "z" trace_re in
+  let noise = Ast.Sites.draw_noise ~run_key:42L program.sites in
 
   let env =
     [
-      ("mu_m", mu_m);
-      ("sigma_m", sigma_m);
-      ("mu_g", mu_g);
-      ("sigma_g", sigma_g);
-      ("%u.z", u);
+      ("mu_m", mu_m); ("sigma_m", sigma_m); ("mu_g", mu_g); ("sigma_g", sigma_g);
     ]
   in
-  let elbo_sym = scalar_val (Ast.Eval.eval env program.elbo) in
+  let elbo_sym = scalar_val (Ast.Eval.eval (noise @ env) program.elbo) in
   check (float 1e-12) "ELBO eval" elbo_val elbo_sym
 
 (* ── Stage 2: ELBO gradient vs central FD ── *)
@@ -317,16 +309,7 @@ let test_two_site_value_match () =
   let _, model_ld = Ast.Assess.assess env model trace_z in
   let _, guide_ld = Ast.Assess.assess env guide trace_z in
   let expected = scalar_val model_ld -. scalar_val guide_ld in
-  let guide_r = Transform.Reparam.reparam guide in
-  let guide_r = Transform.Expand_rank.expand ~senv:env_shapes guide_r in
-  let _, trace_u, _ = Ast.Simulate.simulate ~run_key:123L env guide_r in
-  let noise_env =
-    List.map
-      (fun (name, _) ->
-        let site = String.sub name 3 (String.length name - 3) in
-        (name, List.assoc site trace_u))
-      built.noise
-  in
+  let noise_env = Ast.Sites.draw_noise ~run_key:123L built.sites in
   let actual = scalar_val (Ast.Eval.eval (noise_env @ env) built.elbo) in
   check (float 1e-12) "two-site ELBO" expected actual
 

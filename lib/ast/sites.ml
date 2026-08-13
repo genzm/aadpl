@@ -1,0 +1,67 @@
+open Types
+open View
+
+type kind = [ `Cont | `Disc ]
+type site = { name : string; id : int; frame : int array; kind : kind }
+
+let noise_name_of_name name = "%u." ^ name
+let trace_name_of_name name = "%tr." ^ name
+let noise_name site = noise_name_of_name site.name
+let trace_name site = trace_name_of_name site.name
+
+let rec dist_kind = function
+  | D_uniform -> `Cont
+  | D_pushforward { base; _ } -> dist_kind base
+  | D_categorical _ -> `Disc
+  | D_product (a, b) ->
+      if dist_kind a = `Cont && dist_kind b = `Cont then `Cont else `Disc
+
+(* The sole definition of static site traversal and numbering. *)
+let collect_sites (e : expr) : site list =
+  (* Duplicate names would alias both the counter and generated %u/%tr names. *)
+  check_sites e;
+  let sites = ref [] in
+  let next = ref 0 in
+  let rec walk = function
+    | Sample (_, name, frame, dist) ->
+        sites := { name; id = !next; frame; kind = dist_kind dist } :: !sites;
+        incr next;
+        walk_dist dist
+    | Score (_, e) -> walk e
+    | Const _ | Var _ -> ()
+    | Prim (_, _, args) | Rank (_, _, _, args) -> List.iter walk args
+    | Let (_, _, e1, e2) ->
+        walk e1;
+        walk e2
+  and walk_dist = function
+    | D_uniform -> ()
+    | D_categorical weights -> walk weights
+    | D_pushforward { fwd; inv; base; _ } ->
+        walk fwd;
+        walk inv;
+        walk_dist base
+    | D_product (a, b) ->
+        walk_dist a;
+        walk_dist b
+  in
+  walk e;
+  List.rev !sites
+
+let find name sites = List.find (fun site -> site.name = name) sites
+
+let draw_noise ?(namespace = Prng.Threefry.ns_model) ~run_key
+    (sites : site list) : (string * Tensor.t) list =
+  let key = Prng.Threefry.make_key ~run_key ~namespace in
+  List.map
+    (fun site ->
+      let n = Array.fold_left ( * ) 1 site.frame in
+      let noise = Tensor.make site.frame in
+      for frame_index = 0 to n - 1 do
+        let ctr =
+          Prng.Threefry.make_ctr ~site_id:site.id ~component:1 ~frame_index
+        in
+        let r0, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
+        Buf.set noise.buf frame_index (Prng.Threefry.to_open_unit r0)
+      done;
+      (noise_name site, noise))
+    sites

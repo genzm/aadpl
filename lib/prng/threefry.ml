@@ -35,8 +35,7 @@ let to_open_unit (x : int64) : float =
   (Int64.to_float u52 +. 0.5) *. (1.0 /. 4503599627370496.0)
 
 (* Key construction: (run_key, namespace) *)
-let make_key ~run_key ~namespace : int64 * int64 =
-  (run_key, namespace)
+let make_key ~run_key ~namespace : int64 * int64 = (run_key, namespace)
 
 (* Counter construction: structurally injective.
    ctr[0] = site_id (upper 32 bits) | component (lower 32 bits)
@@ -44,11 +43,13 @@ let make_key ~run_key ~namespace : int64 * int64 =
    component encodes D_product tree path: root=1, left=2k, right=2k+1.
    Injective for depth ≤ 31. *)
 let make_ctr ~site_id ~component ~frame_index : int64 * int64 =
-  (Int64.logor (Int64.shift_left (Int64.of_int site_id) 32)
-               (Int64.of_int component),
-   Int64.of_int frame_index)
+  ( Int64.logor
+      (Int64.shift_left (Int64.of_int site_id) 32)
+      (Int64.of_int component),
+    Int64.of_int frame_index )
 
 (* Namespace constants *)
-let ns_init  = 0L
+let ns_init = 0L
 let ns_model = 1L
-let ns_data  = 2L
+let ns_data = 2L
+let ns_guide = 3L

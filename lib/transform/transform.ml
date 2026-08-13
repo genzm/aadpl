@@ -50,26 +50,40 @@ type grad_program = {
   grad_bodies : (string * expr) list; (* (param_name, grad_body_expr) *)
 }
 
-type elbo_program = { elbo : expr; noise : (string * int array) list }
+type elbo_program = {
+  elbo : expr;
+  sites : Ast.Sites.site list;
+  noise : (string * int array) list;
+}
+
+let noise_env (program : elbo_program) ~run_key =
+  Ast.Sites.draw_noise ~namespace:Prng.Threefry.ns_guide ~run_key program.sites
 
 let build_elbo ~model ~guide ~(env_shapes : (string * int array) list) :
     elbo_program =
   check_sites model;
-  check_sites guide;
+  Reparam.check_guide guide;
   Reparam.check_trace_compat ~model ~guide;
-  let sites = Reparam.collect_sites guide in
+  let sites = Ast.Sites.collect_sites guide in
   let noise =
-    List.map (fun (name, frame) -> (Reparam.u_name name, frame)) sites
+    List.map
+      (fun (site : Ast.Sites.site) -> (Ast.Sites.noise_name site, site.frame))
+      sites
   in
   let slots =
-    List.map (fun (name, _) -> (name, var (Reparam.trace_name name))) sites
+    List.map
+      (fun (site : Ast.Sites.site) ->
+        (site.name, var (Ast.Sites.trace_name site)))
+      sites
   in
-  let guide_r = Reparam.reparam guide in
-  let bindings, _ = Reparam.elim_samples guide_r in
+  let guide_r = Reparam.reparam ~sites guide in
+  let bindings, _ = Reparam.elim_samples ~sites guide_r in
   let model = Expand_rank.expand ~senv:env_shapes model in
   let guide = Expand_rank.expand ~senv:env_shapes guide in
   let trace_shapes =
-    List.map (fun (name, frame) -> (Reparam.trace_name name, frame)) sites
+    List.map
+      (fun (site : Ast.Sites.site) -> (Ast.Sites.trace_name site, site.frame))
+      sites
   in
   let assess_shapes = trace_shapes @ env_shapes in
   let model_ld =
@@ -82,7 +96,7 @@ let build_elbo ~model ~guide ~(env_shapes : (string * int array) list) :
   let elbo = Forward.wrap_bindings bindings body in
   let elbo = Expand_rank.expand ~senv:(noise @ env_shapes) elbo in
   let elbo = Desugar.fuse_views elbo in
-  { elbo; noise }
+  { elbo; sites; noise }
 
 let grad ~(param_shapes : (string * int array) list)
     ?(data_shapes : (string * int array) list = []) (e : expr) : grad_program =
@@ -124,7 +138,9 @@ let grad ~(param_shapes : (string * int array) list)
     | Prim (l, p, args) -> Prim (l, p, List.map subst_data_tangents args)
     | Let (l, s, e1, e2) ->
         Let (l, s, subst_data_tangents e1, subst_data_tangents e2)
-    | Rank _ | Sample _ | Score _ -> e
+    | Rank _ ->
+        failwith "grad: Rank remained after expand while zeroing data tangents"
+    | Sample _ | Score _ -> e
   in
   let bs =
     if data_shapes = [] then bs

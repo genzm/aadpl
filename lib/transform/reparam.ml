@@ -17,8 +17,8 @@
 
 open Ast.Types
 
-let u_name site = "%u." ^ site
-let trace_name site = "%tr." ^ site
+let u_name = Ast.Sites.noise_name_of_name
+let trace_name = Ast.Sites.trace_name_of_name
 
 (* Wrap each Prim in fwd as Rank(0, p, args) so expand_rank can broadcast
    scalar constants against frame-shaped variables. Var/Const/Let pass through. *)
@@ -27,7 +27,8 @@ let rec wrap_rank0 (e : expr) : expr =
   | Const _ | Var _ -> e
   | Prim (l, p, args) -> Rank (l, 0, p, List.map wrap_rank0 args)
   | Let (l, s, e1, e2) -> Let (l, s, wrap_rank0 e1, wrap_rank0 e2)
-  | Rank (l, _, p, args) -> Rank (l, 0, p, List.map wrap_rank0 args)
+  | Rank (l, 0, p, args) -> Rank (l, 0, p, List.map wrap_rank0 args)
+  | Rank _ -> failwith "wrap_rank0: non-elementwise Rank in fwd"
   | Sample _ | Score _ ->
       failwith "wrap_rank0: non-elementwise construct in fwd"
 
@@ -48,13 +49,13 @@ let rec subst_var ~from ~to_ (e : expr) : expr =
    with fwd_var substituted to the given variable name. Recurses through nested
    D_pushforward (e.g. Normal = affine ∘ Φ⁻¹ ∘ Uniform unfolds in 1 step since
    base=D_uniform, but a LogNormal = exp ∘ Normal would unfold in 2). *)
-let rec reparam_dist (loc : loc) (name : string) (dist : dist) :
+let rec reparam_dist (loc : loc) (site : Ast.Sites.site) (dist : dist) :
     dist * expr option =
   match dist with
   | D_uniform | D_categorical _ -> (dist, None)
   | D_pushforward { fwd_var; fwd; base; _ } ->
-      let un = u_name name in
-      let base', inner_fwd = reparam_dist loc name base in
+      let un = Ast.Sites.noise_name site in
+      let base', inner_fwd = reparam_dist loc site base in
       let fwd_body = wrap_rank0 (subst_var ~from:fwd_var ~to_:(var un) fwd) in
       let full_fwd =
         match inner_fwd with
@@ -68,25 +69,32 @@ let rec reparam_dist (loc : loc) (name : string) (dist : dist) :
   | D_product _ ->
       failwith "reparam: D_product in base not supported (Phase 12)"
 
-let rec reparam (e : expr) : expr =
-  match e with
-  | Const _ | Var _ -> e
-  | Prim (l, p, args) -> Prim (l, p, List.map reparam args)
-  | Let (l, s, e1, e2) -> Let (l, s, reparam e1, reparam e2)
-  | Rank (l, k, p, args) -> Rank (l, k, p, List.map reparam args)
-  | Score (l, e) -> Score (l, reparam e)
-  | Sample (l, name, frame, dist) -> (
-      let base, fwd_opt = reparam_dist l name dist in
-      match fwd_opt with
-      | None ->
-          let tr = trace_name name in
-          Let (l, tr, Sample (l, name, frame, base), var tr)
-      | Some fwd_body ->
-          let un = u_name name in
-          let tr = trace_name name in
-          Let
-            (l, un, Sample (l, name, frame, base), Let (l, tr, fwd_body, var tr))
-      )
+let reparam ?sites (e : expr) : expr =
+  let sites = Option.value sites ~default:(Ast.Sites.collect_sites e) in
+  let rec go (e : expr) : expr =
+    match e with
+    | Const _ | Var _ -> e
+    | Prim (l, p, args) -> Prim (l, p, List.map go args)
+    | Let (l, s, e1, e2) -> Let (l, s, go e1, go e2)
+    | Rank (l, k, p, args) -> Rank (l, k, p, List.map go args)
+    | Score (l, e) -> Score (l, go e)
+    | Sample (l, name, frame, dist) -> (
+        let site = Ast.Sites.find name sites in
+        let base, fwd_opt = reparam_dist l site dist in
+        match fwd_opt with
+        | None ->
+            let tr = Ast.Sites.trace_name site in
+            Let (l, tr, Sample (l, name, frame, base), var tr)
+        | Some fwd_body ->
+            let un = Ast.Sites.noise_name site in
+            let tr = Ast.Sites.trace_name site in
+            Let
+              ( l,
+                un,
+                Sample (l, name, frame, base),
+                Let (l, tr, fwd_body, var tr) ))
+  in
+  go e
 
 (* Eliminate primitive samples from a reparameterized guide and flatten all
    Let nodes into a shared binding list.  Uniform samples become free noise
@@ -94,28 +102,21 @@ let rec reparam (e : expr) : expr =
    is returned for completeness, although build_elbo only needs the bindings. *)
 exception Elim_error of loc * string
 
-let elim_samples (e : expr) : Forward.bindings * expr =
+let elim_samples ~(sites : Ast.Sites.site list) (e : expr) :
+    Forward.bindings * expr =
   let rec go e =
     match e with
     | Const _ | Var _ -> ([], e)
-    | Sample (_, name, _, D_uniform) -> ([], var (u_name name))
-    | Sample (l, name, _, D_categorical _) ->
+    | Sample (_, name, _, D_uniform) ->
+        ([], var (Ast.Sites.noise_name (Ast.Sites.find name sites)))
+    | Sample (loc, name, _, _) ->
         raise
           (Elim_error
-             ( l,
-               Printf.sprintf "discrete site '%s' cannot be reparameterized"
+             ( loc,
+               Printf.sprintf "site '%s' violates elim_samples precondition"
                  name ))
-    | Sample (l, name, _, D_pushforward _) ->
-        raise
-          (Elim_error
-             (l, Printf.sprintf "site '%s' was not reparameterized" name))
-    | Sample (l, name, _, D_product _) ->
-        raise
-          (Elim_error
-             ( l,
-               Printf.sprintf "product site '%s' is not supported (Phase 12)"
-                 name ))
-    | Score (_, _) -> ([], mk_zero ())
+    | Score (loc, _) ->
+        raise (Elim_error (loc, "Score violates elim_samples precondition"))
     | Let (_, s, e1, e2) ->
         let bs1, r1 = go e1 in
         let bs2, r2 = go e2 in
@@ -136,11 +137,14 @@ let elim_samples (e : expr) : Forward.bindings * expr =
         (bindings @ bs, arg' :: rev_args))
       ([], []) args
     |> fun (bindings, rev_args) -> (bindings, List.rev rev_args)
-  and mk_zero () =
-    let t = View.Tensor.make [||] in
-    const t
   in
-  go e
+  let bindings, result = go e in
+  let names = List.map fst bindings in
+  if List.length names <> List.length (List.sort_uniq String.compare names) then
+    raise
+      (Elim_error
+         (loc_of e, "binder names must be unique across the flattened guide"));
+  (bindings, result)
 
 (* is_reparammed: true if no Sample has D_pushforward as its dist *)
 let rec is_reparammed (e : expr) : bool =
@@ -157,66 +161,82 @@ and dist_is_primitive = function
   | D_pushforward _ -> false
   | D_product (a, b) -> dist_is_primitive a && dist_is_primitive b
 
-(* --- collect_sites: gather (name, frame) pairs from Sample nodes --- *)
+let collect_sites = Ast.Sites.collect_sites
 
-let collect_sites (e : expr) : (string * int array) list =
-  let acc = ref [] in
+exception Guide_error of loc * string
+
+let check_guide (e : expr) : unit =
+  let rec check_dist loc name = function
+    | D_uniform -> ()
+    | D_pushforward { base; _ } -> check_dist loc name base
+    | D_categorical _ ->
+        raise
+          (Guide_error (loc, Printf.sprintf "guide site '%s' is discrete" name))
+    | D_product _ ->
+        raise
+          (Guide_error
+             ( loc,
+               Printf.sprintf
+                 "guide site '%s' uses D_product, which is not \
+                  reparameterizable"
+                 name ))
+  in
   let rec walk = function
-    | Sample (_, name, frame, dist) ->
-        acc := (name, frame) :: !acc;
-        walk_dist dist
-    | Score (_, e) -> walk e
     | Const _ | Var _ -> ()
-    | Prim (_, _, args) -> List.iter walk args
+    | Prim (_, _, args) | Rank (_, _, _, args) -> List.iter walk args
     | Let (_, _, e1, e2) ->
         walk e1;
         walk e2
-    | Rank (_, _, _, args) -> List.iter walk args
-  and walk_dist = function
-    | D_uniform -> ()
-    | D_categorical e -> walk e
-    | D_pushforward { fwd; inv; base; _ } ->
-        walk fwd;
-        walk inv;
-        walk_dist base
-    | D_product (a, b) ->
-        walk_dist a;
-        walk_dist b
+    | Score (loc, _) ->
+        raise (Guide_error (loc, "guide must not contain Score"))
+    | Sample (loc, name, _, dist) -> check_dist loc name dist
   in
-  walk e;
-  List.rev !acc
+  check_sites e;
+  walk e
 
 (* --- check_trace_compat: verify model and guide have matching sites --- *)
 
 exception Trace_mismatch of string
 
 let check_trace_compat ~model ~guide =
-  let model_sites = collect_sites model in
-  let guide_sites = collect_sites guide in
+  let model_sites = Ast.Sites.collect_sites model in
+  let guide_sites = Ast.Sites.collect_sites guide in
   let pp_frame frame =
     String.concat "," (List.map string_of_int (Array.to_list frame))
   in
   List.iter
-    (fun (name, guide_frame) ->
-      match List.assoc_opt name model_sites with
+    (fun (guide_site : Ast.Sites.site) ->
+      match
+        List.find_opt
+          (fun site -> site.Ast.Sites.name = guide_site.name)
+          model_sites
+      with
       | None ->
           raise
             (Trace_mismatch
-               (Printf.sprintf "guide site '%s' not found in model" name))
-      | Some model_frame ->
-          if model_frame <> guide_frame then
+               (Printf.sprintf "guide site '%s' not found in model"
+                  guide_site.name))
+      | Some model_site ->
+          if model_site.frame <> guide_site.frame then
             raise
               (Trace_mismatch
                  (Printf.sprintf
-                    "site '%s' frame mismatch: model=[%s] guide=[%s]" name
-                    (pp_frame model_frame) (pp_frame guide_frame))))
+                    "site '%s' frame mismatch: model=[%s] guide=[%s]"
+                    guide_site.name
+                    (pp_frame model_site.frame)
+                    (pp_frame guide_site.frame))))
     guide_sites;
   List.iter
-    (fun (name, _) ->
-      match List.assoc_opt name guide_sites with
-        | None ->
-            raise
-              (Trace_mismatch
-                 (Printf.sprintf "model site '%s' not found in guide" name))
-        | Some _ -> ())
+    (fun (model_site : Ast.Sites.site) ->
+      match
+        List.find_opt
+          (fun site -> site.Ast.Sites.name = model_site.name)
+          guide_sites
+      with
+      | None ->
+          raise
+            (Trace_mismatch
+               (Printf.sprintf "model site '%s' not found in guide"
+                  model_site.name))
+      | Some _ -> ())
     model_sites

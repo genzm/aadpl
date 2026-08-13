@@ -8,6 +8,20 @@ let mk_scalar f =
 
 let scalar_val (t : View.Tensor.t) = View.Buf.get t.buf 0
 
+let eval_reparam ~run_key ~env ~senv e =
+  let sites = Ast.Sites.collect_sites e in
+  let e = Transform.Reparam.reparam ~sites e in
+  let bindings, result = Transform.Reparam.elim_samples ~sites e in
+  let e = Transform.Forward.wrap_bindings bindings result in
+  let noise = Ast.Sites.draw_noise ~run_key sites in
+  let noise_shapes =
+    List.map
+      (fun (site : Ast.Sites.site) -> (Ast.Sites.noise_name site, site.frame))
+      sites
+  in
+  Ast.Eval.eval (noise @ env)
+    (Transform.Expand_rank.expand ~senv:(noise_shapes @ senv) e)
+
 (* ── is_reparammed ── *)
 
 let test_is_reparammed_uniform () =
@@ -58,14 +72,11 @@ let test_coupling_scalar () =
   let dist = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
   let e = sample "z" [||] dist in
   (* simulate path *)
-  let _, trace, _ = Ast.Simulate.simulate ~run_key:42L env e in
+  let sites = Ast.Sites.collect_sites e in
+  let _, trace, _ = Ast.Simulate.simulate ~sites ~run_key:42L env e in
   let z_sim = scalar_val (List.assoc "z" trace) in
-  (* reparam + expand + eval path *)
-  let e_r = Transform.Reparam.reparam e in
   let senv = [ ("mu", [||]); ("sigma", [||]) ] in
-  let e_re = Transform.Expand_rank.expand ~senv e_r in
-  (* eval needs the Sample to be handled — use simulate on reparammed expr *)
-  let v_reparam, _, _ = Ast.Simulate.simulate ~run_key:42L env e_re in
+  let v_reparam = eval_reparam ~run_key:42L ~env ~senv e in
   let z_reparam = scalar_val v_reparam in
   (* Bit-exact: = comparison, no tolerance *)
   if z_sim <> z_reparam then
@@ -80,12 +91,10 @@ let test_coupling_frame () =
   let g = 10 in
   let e = sample "z" [| g |] dist in
   (* simulate path: return value = fwd(u) = Normal samples *)
-  let v_sim, _, _ = Ast.Simulate.simulate ~run_key:77L env e in
-  (* reparam path: return value = fwd expression applied to u *)
-  let e_r = Transform.Reparam.reparam e in
+  let sites = Ast.Sites.collect_sites e in
+  let v_sim, _, _ = Ast.Simulate.simulate ~sites ~run_key:77L env e in
   let senv = [ ("mu", [||]); ("sigma", [||]) ] in
-  let e_re = Transform.Expand_rank.expand ~senv e_r in
-  let v_reparam, _, _ = Ast.Simulate.simulate ~run_key:77L env e_re in
+  let v_reparam = eval_reparam ~run_key:77L ~env ~senv e in
   for i = 0 to g - 1 do
     let a = View.Buf.get v_sim.buf i in
     let b = View.Buf.get v_reparam.buf i in
@@ -321,6 +330,93 @@ let test_trace_compat_frame_mismatch () =
      check bool "mentions frame mismatch" true (contains msg "frame mismatch"));
   check bool "Trace_mismatch raised" true !raised
 
+(* ── First-class site table and guide precondition ── *)
+
+let test_site_table () =
+  let normal = Ast.Normal.normal ~mu:"mu" ~sigma:"sigma" in
+  let e =
+    let_ "z"
+      (sample "z" [| 2; 3 |] normal)
+      (let_ "k"
+         (sample "k" [||] (D_categorical (const (mk_scalar 1.0))))
+         (var "z"))
+  in
+  match Ast.Sites.collect_sites e with
+  | [ z; k ] ->
+      check string "z name" "z" z.name;
+      check int "z id" 0 z.id;
+      check (array int) "z frame" [| 2; 3 |] z.frame;
+      check bool "z continuous" true (z.kind = `Cont);
+      check string "k name" "k" k.name;
+      check int "k id" 1 k.id;
+      check bool "k discrete" true (k.kind = `Disc)
+  | _ -> fail "expected two sites"
+
+let test_site_kind_pushforward_discrete () =
+  let weights = const (mk_scalar 1.0) in
+  let dist =
+    D_pushforward
+      {
+        fwd_var = "u";
+        fwd = var "u";
+        inv_var = "x";
+        inv = var "x";
+        base = D_categorical weights;
+      }
+  in
+  match Ast.Sites.collect_sites (sample "k" [||] dist) with
+  | [ site ] ->
+      check bool "pushforward preserves discrete kind" true (site.kind = `Disc)
+  | _ -> fail "expected one site"
+
+let test_site_table_rejects_duplicates () =
+  let e = prim Add [ sample "z" [||] D_uniform; sample "z" [||] D_uniform ] in
+  let raised = ref false in
+  (try ignore (Ast.Sites.collect_sites e)
+   with Duplicate_site (_, "z") -> raised := true);
+  check bool "duplicate rejected before numbering" true !raised
+
+let test_wrap_rank0_rejects_non_elementwise_rank () =
+  let raised = ref false in
+  (try
+     ignore (Transform.Reparam.wrap_rank0 (rank 2 Matmul [ var "a"; var "b" ]))
+   with Failure msg ->
+     raised := true;
+     check bool "mentions non-elementwise" true (contains msg "non-elementwise"));
+  check bool "failure raised" true !raised
+
+let test_elim_rejects_duplicate_binders () =
+  let e =
+    prim Add
+      [
+        let_ "h" (const (mk_scalar 1.0)) (var "h");
+        let_ "h" (const (mk_scalar 2.0)) (var "h");
+      ]
+  in
+  let raised = ref false in
+  (try ignore (Transform.Reparam.elim_samples ~sites:[] e)
+   with Transform.Reparam.Elim_error (_, msg) ->
+     raised := true;
+     check bool "mentions unique binders" true (contains msg "unique"));
+  check bool "Elim_error raised" true !raised
+
+let test_check_guide_score () =
+  let guide =
+    let_ "s" (score (mk_scalar 0.0 |> const)) (sample "z" [||] D_uniform)
+  in
+  check_raises "Score rejected"
+    (Transform.Reparam.Guide_error (dummy_loc, "guide must not contain Score"))
+    (fun () -> Transform.Reparam.check_guide guide)
+
+let test_check_guide_discrete () =
+  let guide = sample "k" [||] (D_categorical (const (mk_scalar 1.0))) in
+  let raised = ref false in
+  (try Transform.Reparam.check_guide guide
+   with Transform.Reparam.Guide_error (_, msg) ->
+     raised := true;
+     check bool "mentions discrete" true (contains msg "discrete"));
+  check bool "Guide_error raised" true !raised
+
 (* ── Test suite ── *)
 
 let () =
@@ -341,6 +437,18 @@ let () =
         [
           test_case "scalar" `Quick test_coupling_scalar;
           test_case "frame" `Quick test_coupling_frame;
+        ] );
+      ( "sites",
+        [
+          test_case "table" `Quick test_site_table;
+          test_case "pushforward discrete" `Quick
+            test_site_kind_pushforward_discrete;
+          test_case "duplicate names" `Quick test_site_table_rejects_duplicates;
+          test_case "rank guard" `Quick
+            test_wrap_rank0_rejects_non_elementwise_rank;
+          test_case "binder guard" `Quick test_elim_rejects_duplicate_binders;
+          test_case "guide Score" `Quick test_check_guide_score;
+          test_case "guide discrete" `Quick test_check_guide_discrete;
         ] );
       ( "consistency",
         [
