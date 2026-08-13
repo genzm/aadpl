@@ -728,6 +728,106 @@ tau rank=0/15 %.1f%%/%.1f%%, endpoint coverage mu/tau/a=%.1f%%/%.1f%%/%.1f%%\n"
     [("mu", mu_chi); ("tau", tau_chi); ("a", a_chi);
      ("log joint", joint_chi)]
 
+let logistic_glmm_program groups observations =
+  let frame_g = [|groups|] and frame_go = [|groups; observations|] in
+  let logits = rank 0 Add
+    [rank 0 Mul [var "gamma"; var "x_obs"]; var "a"] in
+  let one = const (scalar 1.0) in
+  let log_likelihood = rank 0 Add [
+    rank 0 Mul [var "y_obs"; prim Logsigmoid [logits]];
+    rank 0 Mul [rank 0 Sub [one; var "y_obs"];
+      prim Logsigmoid [rank 0 Neg [logits]]];
+  ] in
+  let model =
+    let_ "tau" (sample "tau" [||]
+      (Ast.Half_normal.half_normal ~sigma:"prior_tau_scale"))
+      (let_ "a" (sample "a" frame_g
+        (Ast.Normal.normal ~mu:"zero" ~sigma:"tau"))
+        (score log_likelihood))
+  in
+  let guide =
+    let_ "q_tau_scale" (prim Exp [var "q_tau_rho"])
+      (let_ "tau" (sample "tau" [||]
+        (Ast.Log_normal.log_normal ~mu:"q_tau_loc" ~sigma:"q_tau_scale"))
+        (let_ "q_a_scale" (prim Exp [var "q_a_rho"])
+          (sample "a" frame_g
+            (Ast.Normal.normal ~mu:"q_a_loc" ~sigma:"q_a_scale"))))
+  in
+  model, guide, frame_g, frame_go
+
+let test_logistic_glmm_learning () =
+  let groups = 64 and observations = 20 in
+  let true_gamma = 1.2 and true_tau = 0.7 in
+  let model, guide, frame_g, frame_go =
+    logistic_glmm_program groups observations in
+  let latent_generator = sample "a" frame_g
+    (Ast.Normal.normal ~mu:"zero" ~sigma:"true_tau")
+    |> Transform.Expand_rank.expand
+         ~senv:[("zero", [||]); ("true_tau", [||])] in
+  let _, latent_trace, _ = Ast.Simulate.simulate ~run_key:180L
+    [("zero", scalar 0.0); ("true_tau", scalar true_tau)] latent_generator in
+  let true_a = extract_trace "a" latent_trace in
+  let x = View.Tensor.make frame_go and y = View.Tensor.make frame_go in
+  let key = Prng.Threefry.make_key ~run_key:181L
+    ~namespace:Prng.Threefry.ns_data in
+  for group = 0 to groups - 1 do
+    for observation = 0 to observations - 1 do
+      let i = group * observations + observation in
+      let xv = (float_of_int observation -. 9.5) /. 5.0 in
+      let eta = true_gamma *. xv +. value true_a group in
+      let probability = if eta >= 0.0 then 1.0 /. (1.0 +. exp (-.eta))
+        else let e = exp eta in e /. (1.0 +. e) in
+      let ctr = Prng.Threefry.make_ctr ~site_id:0 ~component:1 ~frame_index:i in
+      let bits, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
+      View.Buf.set x.buf i xv;
+      View.Buf.set y.buf i
+        (if Prng.Threefry.to_open_unit bits < probability then 1.0 else 0.0)
+    done
+  done;
+  let shapes = [("prior_tau_scale", [||]); ("zero", [||]);
+    ("gamma", [||]); ("x_obs", frame_go); ("y_obs", frame_go);
+    ("q_tau_loc", [||]); ("q_tau_rho", [||]);
+    ("q_a_loc", frame_g); ("q_a_rho", frame_g)] in
+  let program = Transform.build_elbo ~observed:[] ~model ~guide
+    ~env_shapes:shapes in
+  let param_shapes = [("gamma", [||]); ("q_tau_loc", [||]);
+    ("q_tau_rho", [||]); ("q_a_loc", frame_g); ("q_a_rho", frame_g)] in
+  let gp = Transform.grad ~param_shapes
+    ~data_shapes:(program.noise @ [("prior_tau_scale", [||]); ("zero", [||]);
+      ("x_obs", frame_go); ("y_obs", frame_go)]) program.elbo in
+  let params = [("gamma", scalar 0.0); ("q_tau_loc", scalar (log 0.8));
+    ("q_tau_rho", scalar (log 0.35)); ("q_a_loc", filled frame_g 0.0);
+    ("q_a_rho", filled frame_g (log 0.6))] in
+  let states = List.map (fun (name, parameter) ->
+    name, {m = filled parameter.View.Tensor.view.View.Ndview.shape 0.0;
+           v = filled parameter.View.Tensor.view.View.Ndview.shape 0.0}) params in
+  let fixed = [("prior_tau_scale", scalar 1.0); ("zero", scalar 0.0);
+               ("x_obs", x); ("y_obs", y)] in
+  let eval step =
+    let env = Transform.noise_env program ~run_key:(Int64.of_int step)
+      @ params @ fixed in
+    Ast.Eval.eval_grad env ~primal_bindings:gp.primal_bindings
+      ~loss_body:gp.loss_body ~grad_bindings:gp.grad_bindings
+      ~grad_bodies:gp.grad_bodies
+  in
+  let initial, _ = eval 60_000 in
+  for step = 1 to 1500 do
+    let _, gradients = eval (60_000 + step) in
+    let learning_rate = if step <= 700 then 0.01 else 0.003 in
+    List.iter (fun (name, parameter) ->
+      adam_tensor_ascent ~step ~learning_rate (List.assoc name states) parameter
+        (List.assoc name gradients)) params
+  done;
+  let final, _ = eval 60_000 in
+  let gamma = value (List.assoc "gamma" params) 0
+  and tau_median = exp (value (List.assoc "q_tau_loc" params) 0) in
+  Printf.printf "\nLogistic GLMM: gamma=%.4f (true %.4f), \
+tau median=%.4f (true %.4f)\n" gamma true_gamma tau_median true_tau;
+  check bool "GLMM ELBO improves" true (value final 0 > value initial 0);
+  check bool "fixed effect recovered" true (Float.abs (gamma -. true_gamma) < 0.25);
+  check bool "random-effect scale recovered" true
+    (Float.is_finite tau_median && Float.abs (tau_median -. true_tau) < 0.3)
+
 let test_observed_site () =
   let model, guide = observed_program 3 in
   let shapes =
@@ -833,4 +933,6 @@ let () =
            test_leading_frame_hierarchical_coupling;
          test_case "SBC stage 2 diagnostic" `Slow
            test_hierarchical_vi_sbc_diagnostic] );
+      ( "12-7 logistic GLMM",
+        [test_case "synthetic learning" `Slow test_logistic_glmm_learning] );
     ]

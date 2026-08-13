@@ -440,6 +440,10 @@ Gamma / Beta / Dirichlet、または一般の切断正規が必要になった�
   15標本の端点内被覆は `mu/tau/a=80.5%/48.0%/87.6%`（較正時87.5%）、
   `tau` の rank 0/15 は `48.0%/3.9%`。独立共役の段1bは通る一方、
   funnel と0近傍を含む `tau` の平均場近似が悪いことを測っている。
+- 12-7 は Bernoulli-logit 尤度を離散観測 site ではなく安定な
+  `Logsigmoid` の `Score` として実装。64群×20観測の合成GLMMを同じ
+  ELBO/Adamで学習し、`gamma=1.3387`（真値1.2）、`tau` guide median
+  `=0.7810`（真値0.7）まで回復。Phase 13 のLRTはこの Score 式を使う。
 
 ---
 
