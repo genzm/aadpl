@@ -93,6 +93,11 @@
  (modules test_phase12)
  (libraries transform ast alcotest))
 
+(test
+ (name test_phase13)
+ (modules test_phase13)
+ (libraries transform ast alcotest))
+
 (executable
  (name test_coverage)
  (modules test_coverage gen_view)

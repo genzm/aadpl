@@ -27,9 +27,9 @@ let rec dist_support = function
   | D_uniform -> S_unit_interval
   | D_categorical (Const (_, weights)) ->
       let shape = weights.View.Tensor.view.View.Ndview.shape in
-      if Array.length shape <> 1 then
-        failwith "dist_support: categorical weights must have rank 1";
-      S_finite shape.(0)
+      if Array.length shape = 0 then
+        failwith "dist_support: categorical weights need a category axis";
+      S_finite shape.(Array.length shape - 1)
   | D_categorical _ ->
       failwith "dist_support: categorical size must be statically known"
   | D_pushforward { support; _ } -> support

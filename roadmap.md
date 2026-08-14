@@ -466,6 +466,20 @@ Gamma / Beta / Dirichlet、または一般の切断正規が必要になった�
 - `_importance`（**重みの配列を返す**。$\log Z$ ではない）
 - ベイズファクター（`logsumexp` の差）
 
+**13-1 / 13-2 検収記録**
+
+- frame 付き `D_categorical` はセルごとに `frame_index` を進め、共有
+  `[C]` またはセル別 `frame+[C]` の重みを受ける。離散は観測 site
+  に限って `assess_expr` / `build_elbo` に入り、guide の禁止は維持。
+- 正則化不完全ガンマはcore内の級数/連分数実装とし、$a=1$ の閉形式、
+  $a=1/2$ の $\chi^2_1$ CDF、survival $t=100$ を検査。境界分散成分は
+  `t=0 -> p=1`, `t>0 -> 0.5 * chi_square_1_sf(t)` として固定。
+- `_quadrature` は対象siteの密度を除き、`log_terms` に
+  `[K] + site.frame` を残す。siteは表から消え、群ごとにK軸を
+  `logsumexp` してからsite frameを和にする。
+- ガウス階層モデルの閉形式周辺尤度に対する絶対誤差は
+  `K=5: 1.951e-4`, `K=10: 1.417e-6`, `K=20: 4.974e-13`。
+
 **確認すべき性質**
 
 - 頻度論とベイズが**同じモデル記述**から出る

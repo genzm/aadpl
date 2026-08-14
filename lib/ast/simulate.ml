@@ -45,32 +45,49 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
   | D_categorical weights_expr ->
       let weights = Eval.eval env weights_expr in
       let ws = weights.view.Ndview.shape in
-      let n = ws.(0) in
-      (* Draw a uniform random number *)
-      let ctr = Prng.Threefry.make_ctr ~site_id ~component ~frame_index:0 in
-      let r0, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
-      let u = Prng.Threefry.to_open_unit r0 in
-      (* Compute CDF and invert *)
-      let sum = ref 0.0 in
-      for i = 0 to n - 1 do
-        sum :=
-          !sum +. Buf.get weights.buf (Ndview.index_of weights.view [| i |])
-      done;
-      let target = u *. !sum in
-      let acc = ref 0.0 in
-      let result = ref (n - 1) in
-      let found = ref false in
-      for i = 0 to n - 1 do
-        if not !found then begin
-          acc :=
-            !acc +. Buf.get weights.buf (Ndview.index_of weights.view [| i |]);
-          if !acc >= target then begin
-            result := i;
-            found := true
+      if Array.length ws = 0 then
+        failwith "categorical weights must have a category axis";
+      let categories = ws.(Array.length ws - 1) in
+      if categories = 0 then failwith "categorical weights must be nonempty";
+      let per_cell = ws = Array.append frame [|categories|] in
+      if not (Array.length ws = 1 || per_cell) then
+        failwith "categorical weights must have shape [C] or frame + [C]";
+      let cells = Array.fold_left ( * ) 1 frame in
+      let result = Tensor.make frame in
+      let frame_index linear =
+        let index = Array.make (Array.length frame) 0 in
+        let rest = ref linear in
+        for axis = Array.length frame - 1 downto 0 do
+          index.(axis) <- !rest mod frame.(axis);
+          rest := !rest / frame.(axis)
+        done;
+        index
+      in
+      let weight cell category =
+        let index = if per_cell then
+          Array.append (frame_index cell) [|category|]
+        else [|category|] in
+        Buf.get weights.buf (Ndview.index_of weights.view index)
+      in
+      for cell = 0 to cells - 1 do
+        let ctr = Prng.Threefry.make_ctr ~site_id ~component ~frame_index:cell in
+        let r0, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
+        let total = ref 0.0 in
+        for category = 0 to categories - 1 do
+          total := !total +. weight cell category
+        done;
+        let target = Prng.Threefry.to_open_unit r0 *. !total in
+        let acc = ref 0.0 and selected = ref (categories - 1) in
+        let found = ref false in
+        for category = 0 to categories - 1 do
+          if not !found then begin
+            acc := !acc +. weight cell category;
+            if !acc >= target then (selected := category; found := true)
           end
-        end
+        done;
+        Buf.set result.buf cell (float_of_int !selected)
       done;
-      scalar (float_of_int !result)
+      result
   | D_pushforward { fwd_var; fwd; base; _ } ->
       let u = sample_dist ~key ~site_id ~component ~frame base env in
       if frame = [||] then begin

@@ -46,7 +46,8 @@ let check_support loc name dist (x : Tensor.t) =
 
 (* Compute log density of a value under a distribution.
    For D_pushforward, uses JVP to compute the Jacobian of inv. *)
-let rec log_density (dist : Types.dist) (x : Tensor.t)
+let rec log_density ?(frame = [||]) ?(frame_index = 0)
+    (dist : Types.dist) (x : Tensor.t)
     (env : Eval.env) : float =
   match dist with
   | D_uniform ->
@@ -57,15 +58,31 @@ let rec log_density (dist : Types.dist) (x : Tensor.t)
 
   | D_categorical weights_expr ->
     let weights = Eval.eval env weights_expr in
-    let n = weights.view.Ndview.shape.(0) in
+    let shape = weights.view.Ndview.shape in
+    if Array.length shape = 0 then
+      failwith "categorical weights must have a category axis";
+    let n = shape.(Array.length shape - 1) in
+    let per_cell = shape = Array.append frame [|n|] in
+    if not (Array.length shape = 1 || per_cell) then
+      failwith "categorical weights must have shape [C] or frame + [C]";
+    let frame_coords = Array.make (Array.length frame) 0 in
+    let rest = ref frame_index in
+    for axis = Array.length frame - 1 downto 0 do
+      frame_coords.(axis) <- !rest mod frame.(axis);
+      rest := !rest / frame.(axis)
+    done;
+    let weight category =
+      let index = if per_cell then Array.append frame_coords [|category|]
+        else [|category|] in
+      Buf.get weights.buf (Ndview.index_of weights.view index) in
     let k = int_of_float (scalar_val x) in
     if k < 0 || k >= n then neg_infinity
     else begin
       let sum = ref 0.0 in
       for i = 0 to n - 1 do
-        sum := !sum +. Buf.get weights.buf (Ndview.index_of weights.view [|i|])
+        sum := !sum +. weight i
       done;
-      let wk = Buf.get weights.buf (Ndview.index_of weights.view [|k|]) in
+      let wk = weight k in
       log (wk /. !sum)
     end
 
@@ -81,7 +98,7 @@ let rec log_density (dist : Types.dist) (x : Tensor.t)
     let dual_env' = (inv_var, (x, seed)) :: dual_env in
     let (_, dinv) = Jvp.jvp_eval dual_env' inv in
     let log_abs_jac = log (Float.abs (scalar_val dinv)) in
-    let base_ld = log_density base u env in
+    let base_ld = log_density ~frame ~frame_index base u env in
     base_ld +. log_abs_jac
 
   | D_product (a, b) ->
@@ -125,7 +142,7 @@ let assess (env : Eval.env) (e : Types.expr)
           let xi = scalar (Buf.get v.buf i) in
           let cell_env = List.map (fun (name, value) ->
             (name, frame_cell frame i value)) env in
-          let ld = log_density dist xi cell_env in
+          let ld = log_density ~frame ~frame_index:i dist xi cell_env in
           log_density_acc := !log_density_acc +. ld
         done
       end;

@@ -16,6 +16,8 @@ let mk_scalar f =
   View.Buf.set t.buf 0 f;
   const t
 
+let mk_zero shape = const (View.Tensor.make shape)
+
 (* Collect free variables from an expression *)
 let free_vars (e : expr) : string list =
   let tbl = Hashtbl.create 8 in
@@ -51,10 +53,10 @@ let assert_no_sample_in_args loc args =
          loc.file loc.line)
 
 (* Sum over all frame axes *)
-let sum_frame frame e =
-  let n = Array.length frame in
+let sum_frame ?(preserve = 0) frame e =
+  let n = Array.length frame - preserve in
   let rec go i acc =
-    if i = 0 then acc else go (i - 1) (prim (Sum_axis 0) [ acc ])
+    if i = 0 then acc else go (i - 1) (prim (Sum_axis preserve) [ acc ])
   in
   go n e
 
@@ -100,8 +102,7 @@ let rec log_density_raw loc dist x =
   | D_uniform ->
       Some (Prim (loc, Log_unit_density, [x]))
   | D_categorical _ ->
-      failwith
-        "assess_expr: D_categorical log-density not yet implemented (Phase 12+)"
+      failwith "assess_expr: categorical density requires frame shape"
   | D_pushforward { inv_var; inv; base; _ } ->
       (* Rename inv_var to a unique gensym'd name *)
       let local_var = Forward.gensym "x" in
@@ -142,8 +143,30 @@ let rec log_density_raw loc dist x =
 (* Build log-density expression, handling frame broadcasting.
    For frame samples, wraps the raw expression in Rank(0,...) + expand
    so scalar constants and env variables broadcast against frame-shaped inputs. *)
-let log_density_expr ~env_shapes ~loc _frame dist x =
-  match log_density_raw loc dist x with
+let log_density_expr ~env_shapes ~loc frame dist x =
+  match dist with
+  | D_categorical weights ->
+      let weights_shape = Expand_rank.infer_shape env_shapes weights in
+      if Array.length weights_shape = 0 then
+        failwith "categorical weights must have a category axis";
+      let categories = weights_shape.(Array.length weights_shape - 1) in
+      let expected = Array.append frame [|categories|] in
+      let weights =
+        if weights_shape = expected then weights
+        else if Array.length weights_shape = 1 then
+          let views = Array.to_list (Array.mapi
+            (fun axis size -> Vbroadcast (axis, size)) frame) in
+          prim (Apply_view views) [weights]
+        else failwith
+          "categorical weights must have shape [C] or frame + [C]" in
+      let axis = Array.length frame in
+      let selected = prim (Select_axis axis) [weights; x] in
+      let total = prim (Sum_axis axis) [weights] in
+      let raw = prim Log [prim Div [selected; total]] in
+      Some (prim Add
+        [Prim (loc, Log_support_density (Ast.Sites.dist_support dist), [x]);
+         raw])
+  | _ -> match log_density_raw loc dist x with
   | None -> None
   | Some raw ->
       let raw = prim Add
@@ -161,27 +184,36 @@ let log_density_expr ~env_shapes ~loc _frame dist x =
       in
       Some (Expand_rank.expand ~senv wrapped)
 
-let assess_expr ?(ns = "a.") ~(env_shapes : (string * int array) list)
+let assess_expr ?(ns = "a.") ?(preserve_shape = [||])
+    ?(exclude_density = []) ~(env_shapes : (string * int array) list)
     (e : expr) (slots : (string * expr) list) : expr =
   Forward.reset_gensym ();
   Forward.with_ns ns (fun () ->
+      let preserve = Array.length preserve_shape in
+      let zero () = mk_zero preserve_shape in
+      let lift senv expression =
+        Expand_rank.expand ~senv
+          (rank 0 Add [zero (); expression])
+      in
       let rec go senv e =
         match e with
-        | Const _ | Var _ -> mk_scalar 0.0
+        | Const _ | Var _ -> zero ()
         | Let (l, s, e1, e2) ->
             let v1, ld1 = go_bind senv e1 in
             let sh1 = Expand_rank.infer_shape senv v1 in
             let local = Forward.gensym "let" in
             let e2 = subst ~from:s ~to_:(var local) e2 in
             let ld2 = go ((local, sh1) :: senv) e2 in
-            Let (l, local, v1, prim Add [ ld1; ld2 ])
+            Let (l, local, v1, lift ((local, sh1) :: senv) (prim Add [ld1; ld2]))
         | Prim (l, _, args) ->
             assert_no_sample_in_args l args;
-            mk_scalar 0.0
+            zero ()
         | Score (_, e) ->
             let value = rewrite senv e in
             let shape = Expand_rank.infer_shape senv value in
-            if shape = [||] then value else sum_frame shape value
+            let value = if Array.length shape = preserve then value
+              else sum_frame ~preserve shape value in
+            lift senv value
         | Sample (loc, name, frame, dist) ->
             density_of senv loc name frame dist
         | Rank _ -> failwith "assess_expr: Rank must be expanded first"
@@ -191,10 +223,15 @@ let assess_expr ?(ns = "a.") ~(env_shapes : (string * int array) list)
             (List.assoc name slots, density_of senv loc name frame dist)
         | _ -> (rewrite senv e, go senv e)
       and density_of senv loc name frame dist =
-        let slot = List.assoc name slots in
-        match log_density_expr ~env_shapes:senv ~loc frame dist slot with
-        | None -> mk_scalar 0.0
-        | Some ld -> if frame = [||] then ld else sum_frame frame ld
+        if List.mem name exclude_density then zero ()
+        else
+          let slot = List.assoc name slots in
+          match log_density_expr ~env_shapes:senv ~loc frame dist slot with
+          | None -> zero ()
+          | Some ld ->
+              let ld = if Array.length frame = preserve then ld
+                else sum_frame ~preserve frame ld in
+              lift senv ld
       and rewrite senv e =
         match e with
         | Const _ | Var _ -> e

@@ -233,10 +233,6 @@ let check_trace_compat_sites ?(observed = []) ~model_sites ~guide_sites () =
           raise
             (Trace_mismatch
                (Printf.sprintf "observed site '%s' not found in model" name))
-      | Some site when site.kind = `Disc ->
-          raise
-            (Trace_mismatch
-               (Printf.sprintf "observed site '%s' must be continuous" name))
       | Some _ -> ())
     observed_names;
   List.iter

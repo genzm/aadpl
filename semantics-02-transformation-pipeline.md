@@ -119,6 +119,7 @@ guide 部分言語の妥当性を**一つの述語に集約する**。個別の�
 
 - $\Pr$: `check_sites model`、`check_sites guide`
 - $\Post$: model のサイト集合と guide のサイト集合が名前で全単射、かつ対応するサイトの `frame` が一致
+- 観測 site は連続・離散をともに許すが、離散 site は guide には許さない。観測値は slot から密度側だけへ入り、`reparam` / `elim_samples` の `%u`・`%tr` 系統には入らない
 - **将来**: 部分 trace（一部を guide、残りを事前から）を許すとき、この全単射は「guide ⊆ model」に緩む。**そのときも非対称性は明示的な引数（`?partial:`）で表現し、既定は全単射のまま**にする
 
 #### `check_no_samples`

@@ -5,6 +5,8 @@ module Unzip = Unzip
 module Transpose = Transpose
 module Reparam = Reparam
 module Assess_expr = Assess_expr
+module Special = Special
+module Quadrature = Quadrature
 open Ast.Types
 
 (* --- discrete sample guard --- *)

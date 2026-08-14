@@ -898,16 +898,15 @@ let test_observed_partition_errors () =
     (fun () -> ignore (Transform.build_elbo ~observed:[("z", var "y_obs");
       ("y", var "y_obs")] ~model ~guide ~env_shapes:shapes))
 
-let test_discrete_observed_rejected () =
-  let weights = tensor [|2|] [|1.0; 1.0|] in
+let test_discrete_observed_allowed () =
+  let weights = tensor [|2|] [|1.0; 3.0|] in
   let model = sample "y" [||] (D_categorical (const weights)) in
   let guide = const (scalar 0.0) in
-  check_raises "discrete observation deferred to Phase 13"
-    (Transform.Reparam.Trace_mismatch
-       "observed site 'y' must be continuous")
-    (fun () -> ignore (Transform.build_elbo
-      ~observed:[("y", var "y_obs")] ~model ~guide
-      ~env_shapes:[("y_obs", [||])]))
+  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+    ~model ~guide ~env_shapes:[("y_obs", [||])] in
+  let actual = Ast.Eval.eval [("y_obs", scalar 1.0)] program.elbo
+    |> fun result -> value result 0 in
+  check (float 1e-12) "discrete observed log density" (log 0.75) actual
 
 let () =
   run "Phase 12"
@@ -939,7 +938,7 @@ let () =
           test_case "simulate then assess" `Quick test_observed_site;
           test_case "latent observed partition" `Quick
             test_observed_partition_errors;
-          test_case "continuous only" `Quick test_discrete_observed_rejected;
+          test_case "discrete observed" `Quick test_discrete_observed_allowed;
         ] );
       ( "12-4 SBC implementation invariants",
         [
