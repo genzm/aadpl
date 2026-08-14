@@ -17,3 +17,8 @@
  (name transformer)
  (public_name lang-transformer)
  (libraries view ast transform prng unix))
+
+(executable
+ (name hmc)
+ (public_name lang-hmc)
+ (libraries view ast transform prng unix))

@@ -375,6 +375,7 @@ let () =
   and dim = getenv_int "TRANSFORMER_DIM" 128
   and heads = getenv_int "TRANSFORMER_HEADS" 4
   and blocks = getenv_int "TRANSFORMER_BLOCKS" 2 in
+  let profile = Sys.getenv_opt "TRANSFORMER_PROFILE" = Some "1" in
   if dim mod heads <> 0 then invalid_arg "dimension must be divisible by heads";
   let text = read_file corpus_path in
   let characters = vocabulary text in
@@ -387,6 +388,7 @@ let () =
   let parameters = ref (initial_parameters config) in
   let states = List.map (fun (name, shape) ->
     name, {mean = Tensor.make shape; variance = Tensor.make shape}) shapes in
+  if profile then begin Ast.Eval.reset_stats (); Ast.Eval.enable_stats () end;
   let started = Unix.gettimeofday () and initial_loss = ref nan in
   for step = 1 to training_steps do
     let tokens, targets = training_batch config encoded
@@ -402,6 +404,7 @@ let () =
         (scalar_value loss)
   done;
   let elapsed = Unix.gettimeofday () -. started in
+  if profile then begin Ast.Eval.disable_stats (); Ast.Eval.report () end;
   let full_prompt = "ROMEO:\n" in
   let prompt_text = String.sub full_prompt 0
     (min (String.length full_prompt) (max 1 (context / 4))) in

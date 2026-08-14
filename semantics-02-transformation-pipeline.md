@@ -384,6 +384,7 @@ $$\texttt{key} = (\text{名前空間},\ \texttt{run\_key}), \qquad \texttt{ctr} 
 | 7–8 | 1 | Phase 14 diffusion の逆過程・初期ノイズ |
 | 9 | 1 | Phase 14 Transformer のミニバッチ開始位置 |
 | 10 | 1 | Phase 14 Transformer 生成へ外から渡す一様乱数 |
+| 11–12 | 1 | Phase 14 HMC の運動量・受容用一様乱数 |
 | 16–31 | 1 | Phase 13 パラメトリックブートストラップ用に予約 |
 
 **`ns_model` と `ns_guide` を分けることが必須である。** 同一にすると、同じ `run_key`・同じ `site_id` に対して model の事前抽出と guide の基底乱数が**同一の一様乱数になる**。ELBO を回すだけなら model の乱数を引かないので無害だが、**SBC（事前から引く → データ生成 → 推論 → 順位の一様性）で順位が壊れる**。しかもバグではなく「相関」として出るため、原因特定が最悪の部類になる。

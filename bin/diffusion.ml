@@ -317,7 +317,9 @@ let () =
   let samples = 2048 in
   let generator = generation_program ~steps:diffusion_steps ~samples ~hidden
     beta alpha alpha_bar in
+  let generation_started = Unix.gettimeofday () in
   let trajectory = Ast.Eval.eval !parameters generator in
+  let generation_elapsed = Unix.gettimeofday () -. generation_started in
   let generated = trajectory_cell trajectory (diffusion_steps - 1)
   and target = target_points samples in
   ensure_directory output_directory;
@@ -329,6 +331,8 @@ let () =
     (List.map (trajectory_cell trajectory) indices);
   Printf.printf "training %.2fs (%.2f ms/step), initial loss %.5f\n"
     elapsed (elapsed *. 1000.0 /. float_of_int training_steps) !initial_loss;
+  Printf.printf "generation %.3fs (%d steps x %d samples)\n"
+    generation_elapsed diffusion_steps samples;
   Printf.printf "wrote %s and %s\n"
     (Filename.concat output_directory "spiral.ppm")
     (Filename.concat output_directory "trajectory.ppm")

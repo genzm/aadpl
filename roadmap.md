@@ -544,6 +544,57 @@ slot roleと積分戦略の切替だけで得られ、北極星②③を達成�
 
 ---
 
+#### Phase 14 — Scan（有界な逐次軸）
+
+**構造と検収記録**
+
+- `Scan` は値のtupleを返さず、複数carryを後続式へ束縛するlet-likeな構成子とした。
+  各stepのnextは更新前carryから同時に計算される。body内の`Sample` / `Score`は
+  loc付きで拒否し、時系列traceは封印した。
+- view層の負strideを確認し、reverseは負stride `Vslice` とのビット一致で固定した。
+  attentionのhead split `[B,C,D] -> [B,H,C,Hd]` もreshape+transposeのviewのまま
+  （materialization 0）であることを検査した。
+- `binding = Let_binding | Scan_binding` と一般化したことで、forwardはScan境界で
+  primal Scanとtangent Scanを生成する。AD用の更新前carry `%scan.pre.*` と必要な
+  residualだけをhidden trajectoryとしてcollectする。transposeはbodyへ
+  `transpose_many`を局所適用し、逆向きScanでcarry随伴を持ち回る。共有パラメータの
+  時刻方向の随伴もhidden carryへ加算するため、全軌跡を別途collectしない。
+- R5-5の検収は、有限展開とのビット一致（Inv-1）、累積和・累積積の閉形式（Inv-2）、
+  Scanを含む内積等式 `1e-10`（Inv-3）、時変積の解析JVPと非線形/RNNの全パラメータFD
+  `1e-5`（Inv-4）、reverseと逆順inputのビット一致（Inv-5）。時変積
+  `a=[2,3,5,7]` の勾配 `[105,70,42,30]` が更新前carryの時刻合わせを固定する。
+- Diffusionはspiral 2D、100 step、`alpha_bar_T=0.005619`。学習は通常のgrad式、
+  生成だけreverse Scanとし、乱数 `[T;S;2]` を外から渡して全軌跡をcollectした。
+  5000 stepは52.52秒（10.50 ms/step）。100 step×2048 sampleの生成評価は
+  2.887秒で、散布図と中間frameにノイズからspiralへの遷移が現れた。
+- TransformerはTiny Shakespeare、vocab 65、context 64、dim 128、4 heads、2 blocks。
+  teacher forcingはScanなし、生成は`buffer`と`position`の2 carry Scanで、外部一様乱数、
+  Matmulによるinverse-CDF、one-hot mask書込みを用いる。150 stepでlossは
+  `4.54212 -> 3.02867 -> 2.71712 -> 2.57047`。生成は
+  `ROMEO:`に続いて`homee`, `younestlyour`, `that`, `the`等の学習した局所遷移を示した。
+- Transformerの実測は508.60秒（3390.66 ms/step）、生成1.309秒/56 token。
+  300–800 ms/stepの予測は不成立だった。1 step profileはkernel 3024.57 ms、
+  511 buffers / 1,098,021,448 bytes、materialization 60。主要項は`mul` 726 ms、
+  batched `matmul` 662 ms、`add` 448 msで、要素ごと中間値・随伴view・多数の小さい
+  frame GEMMが支配する。head split自体はviewだが、attention出力を戻すreshape等は
+  materializeする。現段階では最適化しない。
+- HMCは共役ガウスの`U`だけを既存`grad`へ渡し、6-step leapfrogをinner Scan、
+  2000 Metropolis反復をouter Scan、4 chainをframeとした。運動量と一様乱数は外部入力。
+  posterior mean `0.806830`（閉形式`0.805369`）、variance `0.336770`
+  （`0.328859`）、R-hat `0.999686`、受容率`0.993`、評価約0.28秒だった。
+
+以上により、rev5の「逐次性を有限な配列軸として閉じ込める」を、微分可能なBPTT、
+生成、二重ScanのHMCまで実装した。北極星のspiralとShakespeareをともに達成した。
+
+**未検証のもの**
+
+- `Scatter_write`（Transformerはone-hot mask合成で代替）
+- checkpointing（ADは全軌跡保存）
+- Scan body内の時系列trace（`Sample` / `Score`は封印中）
+- nested Scan全体をさらに微分すること（HMCは外側を微分せず、`grad U`だけを埋め込む）
+
+---
+
 ## 5. 全体の形
 
 ```
@@ -556,6 +607,7 @@ Phase 9      性能     約 1 週     ← Naive との一致
 
 Phase 10–11  確率     約 2 週     ← VAE
 Phase 12–13  統計     約 2 週     ← 検定
+Phase 14     逐次     約 1.5 週   ← Scan / diffusion / Transformer / HMC
 ```
 
 個人プロジェクトの実時間なら 2〜3 倍を見るべきだが、**順序と検査の構造は変わらない**。
@@ -570,6 +622,7 @@ Phase 12–13  統計     約 2 週     ← 検定
 | **MNIST で MLP** | **9** | **性能の仮説** |
 | **VAE** | **11** | **意味論 §21 の主張（配列・AD・PPL・学習の連続性）** |
 | 尤度比検定 | 13 | 頻度論とベイズの統一 |
+| **spiral / Shakespeare生成** | **14** | **有限逐次軸・BPTT・生成を同じScanで表現** |
 
 ### 主なリスク
 

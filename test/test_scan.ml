@@ -126,6 +126,18 @@ let test_attention_head_split_view () =
       28.; 29.; 30.; 31.; 36.; 37.; 38.; 39.; 44.; 45.; 46.; 47.|]
     result
 
+let test_nested_scan_execution () =
+  let inner =
+    scan ~steps:3
+      ~carries:[("inner", var "outer", prim Add [var "inner"; const (scalar 1.0)])]
+      ~inputs:[] ~collect:false ~reverse:false (var "inner") in
+  let expression =
+    scan ~steps:2
+      ~carries:[("outer", const (scalar 0.0), inner)]
+      ~inputs:[] ~collect:true ~reverse:false (var "outer") in
+  check_values "two bounded sequential axes" [|3.0; 6.0|]
+    (Ast.Eval.eval [] expression)
+
 let test_fuse_views_stops_at_scan_boundary () =
   let nested =
     prim (Apply_view [Vslice [|(0, 2, 1)|]])
@@ -404,6 +416,8 @@ let () =
         test_cumulative_sum_and_product;
       Alcotest.test_case "attention head split remains a view" `Quick
         test_attention_head_split_view;
+      Alcotest.test_case "nested Scan executes as two bounded axes" `Quick
+        test_nested_scan_execution;
       Alcotest.test_case "fuse views stops at boundary" `Quick
         test_fuse_views_stops_at_scan_boundary;
     ];
