@@ -78,14 +78,14 @@ let logsumexp_axis0 node_count expression =
     (let_ maximum (prim (Max_axis 0) [var terms])
       (prim Add [var maximum; prim Log [total]]))
 
-let sum_all_axes count expression =
+let sum_axes ~axis count expression =
   let rec go remaining result =
     if remaining = 0 then result
-    else go (remaining - 1) (prim (Sum_axis 0) [result]) in
+    else go (remaining - 1) (prim (Sum_axis axis) [result]) in
   go count expression
 
 let quadrature ~site ~values ~(log_weights : View.Tensor.t)
-    ~(slots : Ast.Sites.slot list) ~model
+    ~preserve_frame ~(slots : Ast.Sites.slot list) ~model
     ~env_shapes =
   if Array.length log_weights.view.shape <> 1 then
     raise (Quadrature_error "log_weights must have shape [K]");
@@ -97,6 +97,8 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t)
     raise (Quadrature_error ("unknown site '" ^ site ^ "'")) in
   if target.kind <> `Cont then
     raise (Quadrature_error "target site must be continuous");
+  if preserve_frame < 0 || preserve_frame > Array.length target.frame then
+    raise (Quadrature_error "preserve_frame exceeds target site frame rank");
   let slot_names = List.map (fun (name, _, _) -> name) slots in
   let latent = List.filter
     (fun candidate -> not (List.mem candidate.Ast.Sites.name slot_names))
@@ -136,7 +138,8 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t)
   let weighted = rank 0 Add [const log_weights; log_integrand]
     |> Expand_rank.expand ~senv:(binding_shapes @ env_shapes) in
   let reduced = logsumexp_axis0 node_count weighted
-    |> sum_all_axes (Array.length target.frame) in
+    |> sum_axes ~axis:preserve_frame
+         (Array.length target.frame - preserve_frame) in
   let log_terms = Forward.wrap_bindings bindings weighted
     |> Expand_rank.expand ~senv:env_shapes in
   let log_marginal = Forward.wrap_bindings bindings reduced

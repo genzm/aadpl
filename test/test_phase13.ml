@@ -12,6 +12,15 @@ let tensor shape values =
   result
 
 let value tensor index = View.Buf.get tensor.View.Tensor.buf index
+let numel tensor = View.Ndview.numel tensor.View.Tensor.view
+
+let filled shape value =
+  let result = View.Tensor.make shape in
+  for index = 0 to numel result - 1 do View.Buf.set result.buf index value done;
+  result
+
+let copy_tensor source = tensor source.View.Tensor.view.View.Ndview.shape
+  (Array.init (numel source) (value source))
 
 let test_regularized_gamma_closed_forms () =
   List.iter (fun x ->
@@ -172,6 +181,7 @@ let test_quadrature_gaussian_closed_form () =
       (fun weight -> log weight -. 0.5 *. log Float.pi) weights
       |> Transform.Quadrature.tensor in
     Transform.Quadrature.quadrature ~site:"a" ~values ~log_weights
+      ~preserve_frame:0
       ~slots:[("y", `Condition, var "y_obs")] ~model ~env_shapes
   in
   let errors = List.map (fun node_count ->
@@ -209,7 +219,10 @@ let test_quadrature_gaussian_closed_form () =
       check (float 1e-7) "quadrature tau FD" fd ad
   | _ -> assert false
 
-let logistic_glmm_model groups =
+let logistic_glmm_model ?replications groups =
+  let parameter_frame = match replications with None -> [||] | Some n -> [|n|] in
+  let group_frame = match replications with
+    | None -> [|groups|] | Some n -> [|n; groups|] in
   let logits = rank 0 Add
     [rank 0 Mul [var "gamma"; var "x_obs"]; var "a"] in
   let likelihood = rank 0 Add [
@@ -218,26 +231,31 @@ let logistic_glmm_model groups =
       [rank 0 Sub [const (scalar 1.0); var "y_obs"];
        prim Logsigmoid [rank 0 Neg [logits]]];
   ] in
-  let_ "gamma" (sample "gamma" [||]
+  let_ "gamma" (sample "gamma" parameter_frame
     (Ast.Normal.normal ~mu:"zero" ~sigma:"prior_gamma_scale"))
-    (let_ "tau" (sample "tau" [||]
+    (let_ "tau" (sample "tau" parameter_frame
       (Ast.Half_normal.half_normal ~sigma:"prior_tau_scale"))
-      (let_ "a" (sample "a" [|groups|]
+      (let_ "a" (sample "a" group_frame
         (Ast.Normal.normal ~mu:"zero" ~sigma:"tau"))
         (score likelihood)))
 
-let glmm_quadrature ~node_count ~groups ~tau_slot ~model
+let glmm_quadrature ~replications ~node_count ~groups ~tau_slot ~model
     ~env_shapes =
   let nodes, weights = Transform.Quadrature.gauss_hermite node_count in
-  let node_cells = Array.init (node_count * groups)
-    (fun index -> sqrt 2.0 *. nodes.(index / groups)) in
-  let values = rank 0 Mul
-    [const (tensor [|node_count; groups|] node_cells); tau_slot]
-    |> Transform.Expand_rank.expand ~senv:env_shapes in
+  let parameter_rank, site_shape, site_cells = match replications with
+    | None -> 0, [|node_count; groups|], groups
+    | Some n -> 1, [|node_count; n; groups|], n * groups in
+  let node_cells = Array.init (node_count * site_cells)
+    (fun index -> sqrt 2.0 *. nodes.(index / site_cells)) in
+  let tau_cells = prim (Apply_view
+    [Vbroadcast (0, node_count); Vbroadcast (parameter_rank + 1, groups)])
+    [tau_slot] in
+  let values = prim Mul [const (tensor site_shape node_cells); tau_cells] in
   let log_weights = Array.map
     (fun weight -> log weight -. 0.5 *. log Float.pi) weights
     |> Transform.Quadrature.tensor in
   Transform.Quadrature.quadrature ~site:"a" ~values ~log_weights
+    ~preserve_frame:parameter_rank
     ~slots:[("gamma", `Maximize, var "gamma_param");
             ("tau", `Maximize, tau_slot)]
     ~model ~env_shapes
@@ -272,6 +290,83 @@ let optimize_marginal ~steps ~learning_rate ~parameters ~fixed expression =
   done;
   let final, _ = evaluate () in
   initial, final
+
+type tensor_adam = { m : View.Tensor.t; v : View.Tensor.t }
+
+let optimize_batched ~steps ~learning_rate ?(nonnegative = []) ~parameters
+    ~fixed expression =
+  let parameter_shapes = List.map (fun (name, parameter) ->
+    name, parameter.View.Tensor.view.View.Ndview.shape) parameters in
+  let data_shapes = List.map (fun (name, datum) ->
+    name, datum.View.Tensor.view.View.Ndview.shape) fixed in
+  let gradient = Transform.grad ~param_shapes:parameter_shapes ~data_shapes expression in
+  let states = List.map (fun (name, parameter) ->
+    let shape = parameter.View.Tensor.view.View.Ndview.shape in
+    name, {m = filled shape 0.0; v = filled shape 0.0}) parameters in
+  let evaluate () =
+    Ast.Eval.eval_grad (parameters @ fixed)
+      ~primal_bindings:gradient.primal_bindings ~loss_body:gradient.loss_body
+      ~grad_bindings:gradient.grad_bindings ~grad_bodies:gradient.grad_bodies in
+  for step = 1 to steps do
+    let _, gradients = evaluate () in
+    let c1 = 1.0 -. 0.9 ** float_of_int step
+    and c2 = 1.0 -. 0.999 ** float_of_int step in
+    List.iter (fun (name, parameter) ->
+      let state = List.assoc name states and gradient = List.assoc name gradients in
+      for index = 0 to numel parameter - 1 do
+        let g = value gradient index in
+        let m = 0.9 *. value state.m index +. 0.1 *. g
+        and v = 0.999 *. value state.v index +. 0.001 *. g *. g in
+        View.Buf.set state.m.buf index m;
+        View.Buf.set state.v.buf index v;
+        let next = value parameter index +. learning_rate *. (m /. c1)
+          /. (sqrt (v /. c2) +. 1e-8) in
+        View.Buf.set parameter.buf index
+          (if List.mem name nonnegative then max 0.0 next else next)
+      done) parameters
+  done;
+  evaluate ()
+
+let generate_null_bootstrap ~replications ~groups ~observations ~gamma =
+  let frame = [|replications; groups; observations|] in
+  let x = View.Tensor.make frame in
+  let weights = View.Tensor.make [|replications; groups; observations; 2|] in
+  for replication = 0 to replications - 1 do
+    for group = 0 to groups - 1 do
+      for observation = 0 to observations - 1 do
+        let index = (replication * groups + group) * observations + observation in
+        let xv = (float_of_int observation
+          -. 0.5 *. float_of_int (observations - 1))
+          /. (0.25 *. float_of_int observations) in
+        let eta = gamma *. xv in
+        let probability = if eta >= 0.0 then 1.0 /. (1.0 +. exp (-.eta))
+          else let e = exp eta in e /. (1.0 +. e) in
+        View.Buf.set x.buf index xv;
+        View.Buf.set weights.buf (2 * index) (1.0 -. probability);
+        View.Buf.set weights.buf (2 * index + 1) probability
+      done
+    done
+  done;
+  let generator = sample "y" frame (D_categorical (const weights)) in
+  let sites = match Ast.Sites.collect_sites generator with
+    | [site] -> [{site with id = 16}]
+    | _ -> assert false in
+  let _, trace, _ = Ast.Simulate.simulate ~sites
+    ~namespace:Prng.Threefry.ns_data ~run_key:401L [] generator in
+  x, List.assoc "y" trace
+
+let chi_square_ks statistics =
+  let sample = Array.copy statistics in
+  Array.sort Float.compare sample;
+  let n = Array.length sample in
+  let distance = ref 0.0 in
+  Array.iteri (fun index statistic ->
+    let cdf = Transform.Special.chi_square_1_cdf statistic in
+    let below = float_of_int index /. float_of_int n
+    and through = float_of_int (index + 1) /. float_of_int n in
+    distance := max !distance (max (Float.abs (cdf -. below))
+      (Float.abs (through -. cdf)))) sample;
+  !distance
 
 let test_logistic_glmm_mle () =
   let groups = 64 and observations = 20 in
@@ -308,14 +403,14 @@ let test_logistic_glmm_mle () =
     ("x_obs", frame); ("y_obs", frame)] in
   let fixed = [("zero", scalar 0.0); ("prior_gamma_scale", scalar 5.0);
     ("prior_tau_scale", scalar 1.0); ("x_obs", x); ("y_obs", y)] in
-  let h0 = glmm_quadrature ~node_count:20 ~groups
+  let h0 = glmm_quadrature ~replications:None ~node_count:20 ~groups
     ~tau_slot:(const (scalar 0.0)) ~model ~env_shapes:common_shapes in
   let h0_parameters = [("gamma_param", scalar 0.0)] in
   let h0_initial, h0_value = optimize_marginal ~steps:500 ~learning_rate:0.03
     ~parameters:h0_parameters ~fixed h0.log_marginal in
   let h1_shapes = ("rho_param", [||]) :: common_shapes in
   let tau_slot = prim Exp [var "rho_param"] in
-  let h1 = glmm_quadrature ~node_count:20 ~groups ~tau_slot
+  let h1 = glmm_quadrature ~replications:None ~node_count:20 ~groups ~tau_slot
     ~model ~env_shapes:h1_shapes in
   let h1_parameters = [("gamma_param", scalar 0.0);
     ("rho_param", scalar (log 0.5))] in
@@ -324,12 +419,19 @@ let test_logistic_glmm_mle () =
   let gamma = value (List.assoc "gamma_param" h1_parameters) 0
   and tau = exp (value (List.assoc "rho_param" h1_parameters) 0) in
   let at_k node_count =
-    let program = glmm_quadrature ~node_count ~groups
+    let program = glmm_quadrature ~replications:None ~node_count ~groups
       ~tau_slot ~model ~env_shapes:h1_shapes in
     Ast.Eval.eval (h1_parameters @ fixed) program.log_marginal |> fun result ->
       value result 0 in
   let k10 = at_k 10 and k15 = at_k 15 and k20 = at_k 20
   and k30 = at_k 30 in
+  if Sys.getenv_opt "VAE_PROFILE" = Some "1" then begin
+    Ast.Eval.reset_stats ();
+    Ast.Eval.enable_stats ();
+    ignore (at_k 20);
+    Ast.Eval.disable_stats ();
+    Ast.Eval.report ()
+  end;
   Printf.printf "\nLogistic marginal MLE: H0=%.6f H1=%.6f gamma=%.4f tau=%.4f; K10/15/20/30=%.6f/%.6f/%.6f/%.6f\n"
     h0_value h1_value gamma tau k10 k15 k20 k30;
   check bool "H0 optimization improves" true (h0_value > h0_initial);
@@ -343,6 +445,108 @@ let test_logistic_glmm_mle () =
     (Float.abs (gamma -. 1.3387) < 0.25 && Float.abs (tau -. 0.7810) < 0.1);
   check bool "K=15 and K=20 agree" true (Float.abs (k20 -. k15) < 1e-3);
   check bool "K=20 and K=30 agree" true (Float.abs (k30 -. k20) < 1e-3)
+
+let test_boundary_lrt_bootstrap () =
+  let full = Sys.getenv_opt "PHASE13_BOOTSTRAP" = Some "1" in
+  let full_replications = match Sys.getenv_opt "PHASE13_BOOTSTRAP_B" with
+    | Some value -> int_of_string value | None -> 200 in
+  let replications, groups, observations, node_count, h0_steps, h1_steps =
+    if full then full_replications, 64, 20, 20, 100, 140
+    else 12, 16, 8, 10, 35, 50 in
+  let parameter_frame = [|replications|]
+  and data_frame = [|replications; groups; observations|] in
+  let x, y = generate_null_bootstrap ~replications ~groups ~observations
+    ~gamma:1.2 in
+  let model = logistic_glmm_model ~replications groups in
+  let fixed = [("zero", scalar 0.0); ("prior_gamma_scale", scalar 5.0);
+    ("prior_tau_scale", scalar 1.0); ("x_obs", x); ("y_obs", y)] in
+  let common_shapes = [("zero", [||]); ("prior_gamma_scale", [||]);
+    ("prior_tau_scale", [||]); ("gamma_param", parameter_frame);
+    ("x_obs", data_frame); ("y_obs", data_frame)] in
+  let zeros = const (filled parameter_frame 0.0) in
+  let h0 = glmm_quadrature ~replications:(Some replications) ~node_count ~groups ~tau_slot:zeros
+    ~model ~env_shapes:common_shapes in
+  let h0_gamma = filled parameter_frame 0.0 in
+  let h0_loss, _ = optimize_batched ~steps:h0_steps ~learning_rate:0.05
+    ~parameters:[("gamma_param", h0_gamma)] ~fixed h0.log_marginal in
+  let probe_tau = const (filled parameter_frame 0.01) in
+  let probe = glmm_quadrature ~replications:(Some replications)
+    ~node_count ~groups ~tau_slot:probe_tau ~model ~env_shapes:common_shapes in
+  let probe_loss = Ast.Eval.eval (("gamma_param", h0_gamma) :: fixed)
+    probe.log_marginal in
+  let boundary_directions = ref 0 in
+  for index = 0 to replications - 1 do
+    if value probe_loss index <= value h0_loss index then
+      incr boundary_directions
+  done;
+  let h1_shapes = ("rho_param", parameter_frame) :: common_shapes in
+  let tau_slot = prim Exp [var "rho_param"] in
+  let h1 = glmm_quadrature ~replications:(Some replications) ~node_count ~groups
+    ~tau_slot ~model ~env_shapes:h1_shapes in
+  let h1_gamma = copy_tensor h0_gamma
+  and h1_rho = filled parameter_frame (log 0.3) in
+  let h1_parameters = [("gamma_param", h1_gamma); ("rho_param", h1_rho)] in
+  let h1_loss, _ = optimize_batched ~steps:h1_steps ~learning_rate:0.03
+    ~parameters:h1_parameters ~fixed h1.log_marginal in
+  let boundary_candidates = ref 0 in
+  for index = 0 to replications - 1 do
+    if value h1_loss index <= value h0_loss index +. 1e-6 then begin
+      incr boundary_candidates;
+      View.Buf.set h1_loss.buf index (value h0_loss index);
+      View.Buf.set h1_gamma.buf index (value h0_gamma index);
+      View.Buf.set h1_rho.buf index neg_infinity
+    end
+  done;
+  let statistics = Array.init replications (fun index ->
+    max 0.0 (2.0 *. (value h1_loss index -. value h0_loss index))) in
+  let monotonic_violations = ref 0 in
+  for index = 0 to replications - 1 do
+    if value h1_loss index +. 1e-4 < value h0_loss index then
+      incr monotonic_violations
+  done;
+  let boundary_tolerance = 0.03 in
+  let atom_count = ref 0 and positive = ref [] in
+  Array.iteri (fun index statistic ->
+    if exp (value h1_rho index) <= boundary_tolerance then incr atom_count
+    else positive := statistic :: !positive) statistics;
+  let positives = Array.of_list !positive in
+  let atom_mass = float_of_int !atom_count /. float_of_int replications in
+  let ks = if Array.length positives = 0 then infinity else chi_square_ks positives in
+  let tail_at_one = Array.fold_left (fun count statistic ->
+    if statistic > 1.0 then count + 1 else count) 0 statistics
+    |> fun count -> float_of_int count /. float_of_int replications in
+  let asymptotic_tail_at_one =
+    Transform.Special.boundary_variance_component_p_value 1.0 in
+  let k_check = if full then 15 else max 5 (node_count - 5) in
+  let h0_check = glmm_quadrature ~replications:(Some replications) ~node_count:k_check ~groups
+    ~tau_slot:zeros ~model ~env_shapes:common_shapes in
+  let h1_check = glmm_quadrature ~replications:(Some replications) ~node_count:k_check ~groups
+    ~tau_slot ~model ~env_shapes:h1_shapes in
+  let h0_check_values = Ast.Eval.eval (("gamma_param", h0_gamma) :: fixed)
+    h0_check.log_marginal
+  and h1_check_values = Ast.Eval.eval (h1_parameters @ fixed)
+    h1_check.log_marginal in
+  let statistic_error = ref 0.0 in
+  for index = 0 to replications - 1 do
+    let alternate = max 0.0 (2.0 *. (value h1_check_values index
+      -. value h0_check_values index)) in
+    statistic_error := max !statistic_error
+      (Float.abs (statistics.(index) -. alternate))
+  done;
+  Printf.printf "\nBoundary LRT B=%d G=%d K=%d: atom=%.3f, positive=%d, KS=%.3f, tail(t>1)=%.3f vs %.3f, boundary directions/candidates=%d/%d, monotonic violations=%d, K statistic delta=%.3g\n"
+    replications groups node_count atom_mass (Array.length positives) ks
+    tail_at_one asymptotic_tail_at_one !boundary_directions !boundary_candidates
+    !monotonic_violations !statistic_error;
+  check int "all H1 likelihoods dominate H0" 0 !monotonic_violations;
+  check bool "all LRT statistics finite" true
+    (Array.for_all Float.is_finite statistics);
+  if full then begin
+    check bool "boundary atom mass near one half" true
+      (atom_mass > 0.3 && atom_mass < 0.7);
+    check bool "positive component follows chi-square one" true (ks < 0.3);
+    check bool "bootstrap and asymptotic tails agree" true
+      (Float.abs (tail_at_one -. asymptotic_tail_at_one) < 0.08)
+  end
 
 let () =
   run "Phase 13" [
@@ -364,5 +568,8 @@ let () =
     ];
     "13-3 logistic marginal MLE", [
       test_case "H0 and H1 fixed-iteration MLE" `Slow test_logistic_glmm_mle;
+    ];
+    "13-4 boundary LRT", [
+      test_case "vectorized null bootstrap" `Slow test_boundary_lrt_bootstrap;
     ];
   ]

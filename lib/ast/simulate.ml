@@ -154,10 +154,11 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
       ignore (va, vb);
       failwith "D_product sampling not yet implemented"
 
-let simulate ?sites ~run_key (env : Eval.env) (e : Types.expr) :
+let simulate ?sites ?(namespace = Prng.Threefry.ns_model) ~run_key
+    (env : Eval.env) (e : Types.expr) :
     Types.value * trace * Types.value =
   let sites = Option.value sites ~default:(Sites.collect_sites e) in
-  let key = Prng.Threefry.make_key ~run_key ~namespace:Prng.Threefry.ns_model in
+  let key = Prng.Threefry.make_key ~run_key ~namespace in
   let trace = ref [] in
   let log_weight = ref 0.0 in
   let rec go (env : Eval.env) (e : Types.expr) : Types.value =
