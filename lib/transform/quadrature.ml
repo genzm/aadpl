@@ -23,7 +23,9 @@ let gauss_hermite node_count =
     else if i = 3 then 1.91 *. !previous -. 0.91 *. nodes.(1)
     else 2.0 *. !previous -. nodes.(i - 2)) in
     let derivative = ref 0.0 in
-    for _ = 1 to 20 do
+    let iteration = ref 0 and converged = ref false in
+    while !iteration < 20 && not !converged do
+      incr iteration;
       let p1 = ref (Float.pi ** (-0.25)) and p2 = ref 0.0 in
       for degree = 1 to node_count do
         let p3 = !p2 in
@@ -34,7 +36,8 @@ let gauss_hermite node_count =
       done;
       derivative := sqrt (2.0 *. n) *. !p2;
       let next = !z -. !p1 /. !derivative in
-      if Float.abs (next -. !z) < 1e-15 then z := next else z := next
+      converged := Float.abs (next -. !z) < 1e-15;
+      z := next
     done;
     previous := !z;
     nodes.(i) <- !z;
@@ -65,8 +68,8 @@ let rec prefix_sample_frames node_count = function
   | Score (loc, expression) -> Score (loc, prefix_sample_frames node_count expression)
 
 let logsumexp_axis0 node_count expression =
-  let terms = "%q.terms" in
-  let maximum = "%q.max" in
+  let terms = Forward.gensym "terms" in
+  let maximum = Forward.gensym "max" in
   let maximum_cells =
     prim (Apply_view [Vbroadcast (0, node_count)]) [var maximum] in
   let shifted = prim Sub [var terms; maximum_cells] in
@@ -81,7 +84,8 @@ let sum_all_axes count expression =
     else go (remaining - 1) (prim (Sum_axis 0) [result]) in
   go count expression
 
-let quadrature ~site ~values ~(log_weights : View.Tensor.t) ~observed ~model
+let quadrature ~site ~values ~(log_weights : View.Tensor.t)
+    ~(slots : Ast.Sites.slot list) ~model
     ~env_shapes =
   if Array.length log_weights.view.shape <> 1 then
     raise (Quadrature_error "log_weights must have shape [K]");
@@ -93,9 +97,9 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t) ~observed ~model
     raise (Quadrature_error ("unknown site '" ^ site ^ "'")) in
   if target.kind <> `Cont then
     raise (Quadrature_error "target site must be continuous");
-  let observed_names = List.map fst observed in
+  let slot_names = List.map (fun (name, _, _) -> name) slots in
   let latent = List.filter
-    (fun candidate -> not (List.mem candidate.Ast.Sites.name observed_names))
+    (fun candidate -> not (List.mem candidate.Ast.Sites.name slot_names))
     model_sites in
   if List.map (fun candidate -> candidate.Ast.Sites.name) latent <> [site] then
     raise (Quadrature_error
@@ -106,19 +110,29 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t) ~observed ~model
   let prefix expression =
     prim (Apply_view [Vbroadcast (0, node_count)]) [expression] in
   let target_slot = "%q.slot." ^ site in
-  let observed_bindings = List.map (fun (name, expression) ->
+  let slot_bindings = List.map (fun (name, _, expression) ->
     let local = "%q.slot." ^ name in
-    local, prefix expression) observed in
-  let bindings = (target_slot, values) :: observed_bindings in
+    local, prefix expression) slots in
+  let model_free = Assess_expr.free_vars model in
+  let external_shapes = List.filter
+    (fun (name, _) -> List.mem name model_free) env_shapes in
+  let external_bindings = List.map (fun (name, _) ->
+    "%q.env." ^ name, prefix (var name)) external_shapes in
+  let model = List.fold_left2 (fun expression (name, _) (local, _) ->
+    Assess_expr.subst ~from:name ~to_:(var local) expression)
+    model external_shapes external_bindings in
+  let bindings = (target_slot, values) :: slot_bindings @ external_bindings in
   let binding_shapes = List.map (fun (name, expression) ->
     name, Expand_rank.infer_shape env_shapes expression) bindings in
-  let slots = (site, var target_slot) :: List.map2
-    (fun (name, _) (local, _) -> name, var local) observed observed_bindings in
+  let density_slots = (site, var target_slot) :: List.map2
+    (fun (name, _, _) (local, _) -> name, var local) slots slot_bindings in
   let prefixed = prefix_sample_frames node_count model
-    |> Expand_rank.expand ~senv:env_shapes in
+    |> Expand_rank.expand ~senv:(binding_shapes @ env_shapes) in
   let log_integrand = Assess_expr.assess_expr ~ns:"q."
-    ~preserve_shape:expected_shape ~exclude_density:[site]
-    ~env_shapes:(binding_shapes @ env_shapes) prefixed slots in
+    ~preserve_shape:expected_shape
+    ~exclude_density:(site :: List.filter_map (function
+      | name, `Maximize, _ -> Some name | _, `Condition, _ -> None) slots)
+    ~env_shapes:(binding_shapes @ env_shapes) prefixed density_slots in
   let weighted = rank 0 Add [const log_weights; log_integrand]
     |> Expand_rank.expand ~senv:(binding_shapes @ env_shapes) in
   let reduced = logsumexp_axis0 node_count weighted

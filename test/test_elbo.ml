@@ -56,7 +56,7 @@ let test_elbo_eval () =
   let env_shapes =
     [ ("mu_m", [||]); ("sigma_m", [||]); ("mu_g", [||]); ("sigma_g", [||]) ]
   in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
   check
     (list (pair string (array int)))
     "noise"
@@ -81,7 +81,7 @@ let test_elbo_eval () =
 let test_noise_namespaces () =
   let guide = sample "z" [||] D_uniform in
   let sites = Ast.Sites.collect_sites guide in
-  let program = Transform.build_elbo ~observed:[] ~model:guide ~guide ~env_shapes:[] in
+  let program = Transform.build_elbo ~slots:[] ~model:guide ~guide ~env_shapes:[] in
   let _, trace, _ = Ast.Simulate.simulate ~sites ~run_key:42L [] guide in
   let model_noise = Ast.Sites.draw_noise ~run_key:42L sites in
   let guide_noise = Ast.Sites.draw_noise
@@ -103,7 +103,7 @@ let test_elbo_grad () =
   let env_shapes =
     [ ("mu_m", [||]); ("sigma_m", [||]); ("mu_g", [||]); ("sigma_g", [||]) ]
   in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
 
   (* grad wrt guide params *)
   let param_shapes = [ ("mu_g", [||]); ("sigma_g", [||]) ] in
@@ -169,7 +169,7 @@ let test_elbo_coupling () =
   let env_shapes =
     [ ("mu_m", [||]); ("sigma_m", [||]); ("mu_g", [||]); ("sigma_g", [||]) ]
   in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
   let param_shapes = [ ("mu_g", [||]); ("sigma_g", [||]) ] in
   let data_shapes = program.noise @ [ ("mu_m", [||]); ("sigma_m", [||]) ] in
   let gp = Transform.grad ~param_shapes ~data_shapes program.elbo in
@@ -239,7 +239,7 @@ let test_mlp_guide_fd () =
       ("sigma_g", [||]);
     ]
   in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
   check
     (list (pair string (array int)))
     "MLP noise"
@@ -304,7 +304,7 @@ let test_two_site_value_match () =
       (fun name -> (name, [||]))
       [ "mz"; "sz"; "mw"; "sw"; "qz"; "qsz"; "qw"; "qsw" ]
   in
-  let built = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let built = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
   check
     (list (pair string (array int)))
     "two noises"

@@ -79,7 +79,13 @@ let chi_square_1_sf statistic =
   if statistic < 0.0 then invalid_arg "chi_square_1_sf: negative statistic";
   regularized_gamma_q 0.5 (0.5 *. statistic)
 
-let boundary_variance_component_p_value statistic =
-  if statistic < 0.0 then
-    invalid_arg "boundary_variance_component_p_value: negative statistic";
-  if statistic = 0.0 then 1.0 else 0.5 *. chi_square_1_sf statistic
+let boundary_variance_component_p_value ?(statistic_tolerance = 0.0)
+    ?boundary_estimate ?(boundary_tolerance = 0.0) statistic =
+  if statistic < 0.0 || statistic_tolerance < 0.0
+     || boundary_tolerance < 0.0 then
+    invalid_arg "boundary_variance_component_p_value: negative input";
+  let at_boundary = statistic <= statistic_tolerance ||
+    match boundary_estimate with
+    | Some estimate -> estimate <= boundary_tolerance
+    | None -> false in
+  if at_boundary then 1.0 else 0.5 *. chi_square_1_sf statistic

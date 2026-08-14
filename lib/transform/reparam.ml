@@ -217,14 +217,14 @@ let check_support_compat ~model_sites ~guide_sites =
                     guide_site.name)))
     guide_sites
 
-let check_trace_compat_sites ?(observed = []) ~model_sites ~guide_sites () =
+let check_trace_compat_sites ?(slots = []) ~model_sites ~guide_sites () =
   let pp_frame frame =
     String.concat "," (List.map string_of_int (Array.to_list frame))
   in
-  let observed_names = List.map fst observed in
-  if List.length observed_names <>
-     List.length (List.sort_uniq String.compare observed_names) then
-    raise (Trace_mismatch "duplicate observed site name");
+  let slot_names = List.map (fun (name, _, _) -> name) slots in
+  if List.length slot_names <>
+     List.length (List.sort_uniq String.compare slot_names) then
+    raise (Trace_mismatch "duplicate slot site name");
   List.iter
     (fun name ->
       match List.find_opt (fun site ->
@@ -232,15 +232,15 @@ let check_trace_compat_sites ?(observed = []) ~model_sites ~guide_sites () =
       | None ->
           raise
             (Trace_mismatch
-               (Printf.sprintf "observed site '%s' not found in model" name))
+               (Printf.sprintf "slotted site '%s' not found in model" name))
       | Some _ -> ())
-    observed_names;
+    slot_names;
   List.iter
     (fun (guide_site : Ast.Sites.site) ->
-      if List.mem guide_site.name observed_names then
+      if List.mem guide_site.name slot_names then
         raise
           (Trace_mismatch
-             (Printf.sprintf "observed site '%s' also appears in guide"
+             (Printf.sprintf "slotted site '%s' also appears in guide"
                 guide_site.name));
       match
         List.find_opt
@@ -264,7 +264,7 @@ let check_trace_compat_sites ?(observed = []) ~model_sites ~guide_sites () =
     guide_sites;
   List.iter
     (fun (model_site : Ast.Sites.site) ->
-      if List.mem model_site.name observed_names then () else match
+      if List.mem model_site.name slot_names then () else match
         List.find_opt
           (fun site -> site.Ast.Sites.name = model_site.name)
           guide_sites

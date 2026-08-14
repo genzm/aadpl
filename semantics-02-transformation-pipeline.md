@@ -119,7 +119,8 @@ guide 部分言語の妥当性を**一つの述語に集約する**。個別の�
 
 - $\Pr$: `check_sites model`、`check_sites guide`
 - $\Post$: model のサイト集合と guide のサイト集合が名前で全単射、かつ対応するサイトの `frame` が一致
-- 観測 site は連続・離散をともに許すが、離散 site は guide には許さない。観測値は slot から密度側だけへ入り、`reparam` / `elim_samples` の `%u`・`%tr` 系統には入らない
+- slot は `` `Condition ``（密度を含む）または `` `Maximize ``（密度を除く）を明示する。どちらも値は密度側だけへ入り、`reparam` / `elim_samples` の `%u`・`%tr` 系統には入らない
+- `` `Condition `` は連続・離散 site をともに許すが、離散 site は guide には許さない
 - **将来**: 部分 trace（一部を guide、残りを事前から）を許すとき、この全単射は「guide ⊆ model」に緩む。**そのときも非対称性は明示的な引数（`?partial:`）で表現し、既定は全単射のまま**にする
 
 #### `check_no_samples`
@@ -235,16 +236,16 @@ trace 上の対数密度を**式として**構成する。
 ### 3.1 推論構築（`build_elbo`）
 
 ```
-入力: model, guide, observed, env_shapes
+入力: model, guide, slots, env_shapes
 
   1. model_sites ← collect_sites model
   2. check_guide guide                    (check_sites guide を内包)
   3. sites ← collect_sites guide
-  4. check_trace_compat (model_sites = sites ⊎ observed)
+  4. check_trace_compat (model_sites = sites ⊎ slot sites)
      check_support_compat model_sites sites
   ─────────────────────────────── 以降、事前条件は満たされている
   5. noise ← [(%u.n, frame) | n ∈ sites]
-     slots ← [(n, Var %tr.n) | n ∈ sites] ∪ observed
+     density_slots ← [(n, Var %tr.n) | n ∈ sites] ∪ slots
 
      ┌── 値の系統（展開前） ──────────┐   ┌── 密度の系統（展開後） ────┐
   6. │ guide_r  ← reparam ~sites guide │ 7.│ model_e ← expand model      │
@@ -261,7 +262,7 @@ trace 上の対数密度を**式として**構成する。
 
 **6 と 7 が別系統であることが、この設計の非自明な点である**（§1.1）。6 は `Rank(0,…)` を生成し、7 は `Rank` を拒否する。8 で合流し、9 で全体を再展開して整合する。
 
-$\Post$: `elbo` は `Sample` / `Score` を含まず、自由変数は `noise ∪ env_shapes` の名前のみ。guide に現れる site が潜在、`observed` から式スロットを受ける model-only site が観測であり、この二集合は互いに素で model site 全体を分割する。Phase 12 では観測 site は連続分布に限る。
+$\Post$: `elbo` は `Sample` / `Score` を含まず、自由変数は `noise ∪ env_shapes` の名前のみ。guide に現れる site と、`Condition` / `Maximize` slot を受ける model-only site は互いに素で model site 全体を分割する。`Condition` は密度を含み、`Maximize` は同じsite記述の事前密度を除く。
 
 `assess_expr` は各 site の密度入口に `Log_support_density`（値も接も零、宣言台外で loc 付き停止）を置く。押し出し基底の `Log_unit_density` は CDF の端点丸めを吸収する閉区間版だが、直接 Uniform site は前者の `S_unit_interval` により開区間のままであり、値版 `assess` と一致する。
 
@@ -353,7 +354,9 @@ $\Inv$ **counter の構造的単射性**: $(\mathit{site\_id}, \mathit{component
 
 **手続き軸の規約**: 複製・パーティクル・求積節点の軸は frame の
 先頭側へ、外側から `[replication; particle/node; existing axes...]` の順で
-積む。参加する観測・パラメータも同じ手続き軸を明示的に持たせる。
+積む。手続き変換は参加する観測・パラメータにも同じ軸を付加する。
+`_quadrature` は自由変数を局所束縛して節点軸を付加するため、呼び出し側の
+`env_shapes` と値は手続き軸を含まない元の形を保つ。
 `simulate` の分布パラメータは frame と leading agreement する場合だけ
 後方へ broadcast し、参照された非leading形状はその場で拒否する。
 

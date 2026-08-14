@@ -2,6 +2,8 @@ open Types
 open View
 
 type kind = [ `Cont | `Disc ]
+type slot_role = [ `Condition | `Maximize ]
+type slot = string * slot_role * expr
 type site = {
   name : string;
   id : int;

@@ -82,7 +82,7 @@ let test_frame_sample_score_assess () =
 let test_conjugate_elbo_fd () =
   let samples = 7 in
   let model, guide, env_shapes = conjugate_program samples in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
   let average_elbo =
     prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.elbo ]
   in
@@ -120,7 +120,7 @@ let test_conjugate_gaussian_vi () =
   let observed = 1.2 in
   let observation_sigma = 0.7 in
   let model, guide, env_shapes = conjugate_program samples in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide ~env_shapes in
+  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
   let average_elbo =
     prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.elbo ]
   in

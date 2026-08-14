@@ -62,34 +62,34 @@ type elbo_program = {
 let noise_env (program : elbo_program) ~run_key =
   Ast.Sites.draw_noise ~namespace:Prng.Threefry.ns_guide ~run_key program.sites
 
-let build_elbo ~(observed : (string * expr) list) ~model ~guide
+let build_elbo ~(slots : Ast.Sites.slot list) ~model ~guide
     ~(env_shapes : (string * int array) list) :
     elbo_program =
   Reparam.check_guide guide;
   let model_sites = Ast.Sites.collect_sites model in
   let sites = Ast.Sites.collect_sites guide in
-  Reparam.check_trace_compat_sites ~observed ~model_sites ~guide_sites:sites ();
+  Reparam.check_trace_compat_sites ~slots ~model_sites ~guide_sites:sites ();
   Reparam.check_support_compat ~model_sites ~guide_sites:sites;
   List.iter
-    (fun (name, value) ->
+    (fun (name, _, value) ->
       let site = Ast.Sites.find name model_sites in
       let shape = Expand_rank.infer_shape env_shapes value in
       if shape <> site.frame then
         raise
           (Reparam.Trace_mismatch
-             (Printf.sprintf "observed site '%s' shape does not match frame"
+             (Printf.sprintf "slotted site '%s' shape does not match frame"
                 name)))
-    observed;
+    slots;
   let noise =
     List.map
       (fun (site : Ast.Sites.site) -> (Ast.Sites.noise_name site, site.frame))
       sites
   in
-  let slots =
+  let density_slots =
     List.map
       (fun (site : Ast.Sites.site) ->
         (site.name, var (Ast.Sites.trace_name site)))
-      sites @ observed
+      sites @ List.map (fun (name, _, value) -> name, value) slots
   in
   let guide_r = Reparam.reparam ~sites guide in
   let bindings, _ = Reparam.elim_samples ~sites guide_r in
@@ -102,10 +102,13 @@ let build_elbo ~(observed : (string * expr) list) ~model ~guide
   in
   let assess_shapes = trace_shapes @ env_shapes in
   let model_ld =
-    Assess_expr.assess_expr ~ns:"m." ~env_shapes:assess_shapes model slots
+    let excluded = List.filter_map (function
+      | name, `Maximize, _ -> Some name | _, `Condition, _ -> None) slots in
+    Assess_expr.assess_expr ~ns:"m." ~exclude_density:excluded
+      ~env_shapes:assess_shapes model density_slots
   in
   let guide_ld =
-    Assess_expr.assess_expr ~ns:"g." ~env_shapes:assess_shapes guide slots
+    Assess_expr.assess_expr ~ns:"g." ~env_shapes:assess_shapes guide density_slots
   in
   let body = prim Sub [ model_ld; guide_ld ] in
   let elbo = Forward.wrap_bindings bindings body in

@@ -268,7 +268,7 @@ let test_hierarchical_all_parameter_fd () =
   in
   let data_shapes = List.filter
     (fun (name, _) -> not (List.mem_assoc name param_shapes)) shapes in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide
+  let program = Transform.build_elbo ~slots:[] ~model ~guide
     ~env_shapes:shapes in
   let gradient = Transform.grad ~param_shapes
     ~data_shapes:(program.noise @ data_shapes) program.elbo in
@@ -308,7 +308,7 @@ let test_support_check () =
   check_raises "Normal guide is not contained in HalfNormal model"
     (Transform.Reparam.Support_mismatch
        (dummy_loc, "guide support is not contained in model support at site 'tau'"))
-    (fun () -> ignore (Transform.build_elbo ~observed:[] ~model ~guide:bad_guide
+    (fun () -> ignore (Transform.build_elbo ~slots:[] ~model ~guide:bad_guide
       ~env_shapes:[
         ("model_scale", [||]); ("guide_mu", [||]); ("guide_scale", [||]);
       ]));
@@ -316,7 +316,7 @@ let test_support_check () =
     (Ast.Normal.normal ~mu:"model_mu" ~sigma:"model_scale") in
   let narrow_guide = sample "tau" [||]
     (Ast.Half_normal.half_normal ~sigma:"guide_scale") in
-  ignore (Transform.build_elbo ~observed:[] ~model:broad_model ~guide:narrow_guide
+  ignore (Transform.build_elbo ~slots:[] ~model:broad_model ~guide:narrow_guide
     ~env_shapes:[
       ("model_mu", [||]); ("model_scale", [||]); ("guide_scale", [||]);
     ])
@@ -362,7 +362,8 @@ let test_observed_optimal_elbo () =
     ("prior_mu", [||]); ("prior_scale", [||]); ("obs_scale", [||]);
     ("q_mu", frame); ("q_rho", frame); ("y_obs", frame);
   ] in
-  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+  let program = Transform.build_elbo
+    ~slots:[("y", `Condition, var "y_obs")]
     ~model ~guide ~env_shapes:shapes in
   let env = Transform.noise_env program ~run_key:140L @ [
     ("prior_mu", scalar 0.0); ("prior_scale", scalar 1.0);
@@ -475,7 +476,8 @@ let test_sbc_language_vi () =
   let expanded_model = Transform.Expand_rank.expand ~senv:shapes model in
   let _, generated, _ = Ast.Simulate.simulate ~run_key:160L fixed expanded_model in
   let z_true = extract_trace "z" generated and y = extract_trace "y" generated in
-  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+  let program = Transform.build_elbo
+    ~slots:[("y", `Condition, var "y_obs")]
     ~model ~guide ~env_shapes:shapes in
   let gp = Transform.grad ~param_shapes:[("q_mu", frame); ("q_rho", frame)]
     ~data_shapes:(program.noise @ [("prior_mu", [||]); ("prior_scale", [||]);
@@ -662,7 +664,8 @@ let test_hierarchical_vi_sbc_diagnostic () =
   and tau_true = extract_trace "tau" generated
   and a_true = extract_trace "a" generated
   and y = extract_trace "y" generated in
-  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+  let program = Transform.build_elbo
+    ~slots:[("y", `Condition, var "y_obs")]
     ~model ~guide ~env_shapes:shapes in
   let param_shapes = [("q_mu_loc", frame_n); ("q_mu_rho", frame_n);
     ("q_tau_loc", frame_n); ("q_tau_rho", frame_n);
@@ -810,7 +813,7 @@ let test_logistic_glmm_learning () =
     ("gamma", [||]); ("x_obs", frame_go); ("y_obs", frame_go);
     ("q_tau_loc", [||]); ("q_tau_rho", [||]);
     ("q_a_loc", frame_g); ("q_a_rho", frame_g)] in
-  let program = Transform.build_elbo ~observed:[] ~model ~guide
+  let program = Transform.build_elbo ~slots:[] ~model ~guide
     ~env_shapes:shapes in
   let param_shapes = [("gamma", [||]); ("q_tau_loc", [||]);
     ("q_tau_rho", [||]); ("q_a_loc", frame_g); ("q_a_rho", frame_g)] in
@@ -872,7 +875,8 @@ let test_observed_site () =
   check (float 1e-12) "generated y assessed identically" (value assessed 0)
     (value symbolic 0);
   let y = List.assoc "y" generated_trace in
-  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+  let program = Transform.build_elbo
+    ~slots:[("y", `Condition, var "y_obs")]
     ~model ~guide ~env_shapes:shapes in
   check (list string) "only latent sites draw guide noise" ["z"]
     (List.map (fun site -> site.Ast.Sites.name) program.sites);
@@ -890,19 +894,21 @@ let test_observed_partition_errors () =
     ] in
   check_raises "model site must be latent or observed"
     (Transform.Reparam.Trace_mismatch "model site 'y' not found in guide")
-    (fun () -> ignore (Transform.build_elbo ~observed:[]
+    (fun () -> ignore (Transform.build_elbo ~slots:[]
       ~model ~guide ~env_shapes:shapes));
   check_raises "observed cannot also be latent"
     (Transform.Reparam.Trace_mismatch
-       "observed site 'z' also appears in guide")
-    (fun () -> ignore (Transform.build_elbo ~observed:[("z", var "y_obs");
-      ("y", var "y_obs")] ~model ~guide ~env_shapes:shapes))
+       "slotted site 'z' also appears in guide")
+    (fun () -> ignore (Transform.build_elbo
+      ~slots:[("z", `Condition, var "y_obs");
+        ("y", `Condition, var "y_obs")] ~model ~guide ~env_shapes:shapes))
 
 let test_discrete_observed_allowed () =
   let weights = tensor [|2|] [|1.0; 3.0|] in
   let model = sample "y" [||] (D_categorical (const weights)) in
   let guide = const (scalar 0.0) in
-  let program = Transform.build_elbo ~observed:[("y", var "y_obs")]
+  let program = Transform.build_elbo
+    ~slots:[("y", `Condition, var "y_obs")]
     ~model ~guide ~env_shapes:[("y_obs", [||])] in
   let actual = Ast.Eval.eval [("y_obs", scalar 1.0)] program.elbo
     |> fun result -> value result 0 in

@@ -30,7 +30,18 @@ let free_vars (e : expr) : string list =
         go bound e1;
         go (s :: bound) e2
     | Rank (_, _, _, args) -> List.iter (go bound) args
-    | Sample _ | Score _ -> ()
+    | Sample (_, _, _, dist) -> go_dist bound dist
+    | Score (_, expression) -> go bound expression
+  and go_dist bound = function
+    | D_uniform -> ()
+    | D_categorical weights -> go bound weights
+    | D_pushforward { fwd_var; fwd; inv_var; inv; base; _ } ->
+        go (fwd_var :: bound) fwd;
+        go (inv_var :: bound) inv;
+        go_dist bound base
+    | D_product (left, right) ->
+        go_dist bound left;
+        go_dist bound right
   in
   go [] e;
   Hashtbl.fold (fun k () acc -> k :: acc) tbl []
