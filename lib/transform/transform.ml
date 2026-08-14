@@ -7,6 +7,7 @@ module Reparam = Reparam
 module Assess_expr = Assess_expr
 module Special = Special
 module Quadrature = Quadrature
+module Importance = Importance
 open Ast.Types
 
 (* --- discrete sample guard --- *)

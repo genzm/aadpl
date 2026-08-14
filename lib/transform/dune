@@ -1,5 +1,5 @@
 (library
  (name transform)
  (public_name lang.transform)
- (modules transform expand_rank desugar forward unzip transpose reparam assess_expr special quadrature)
+ (modules transform expand_rank desugar forward unzip transpose reparam assess_expr special quadrature importance)
  (libraries ast))

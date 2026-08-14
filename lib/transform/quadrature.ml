@@ -53,6 +53,20 @@ let tensor values =
   Array.iteri (View.Buf.set result.buf) values;
   result
 
+let gauss_hermite_lebesgue ?(half_line = false) ~scale node_count =
+  if scale <= 0.0 then
+    invalid_arg "gauss_hermite_lebesgue: positive scale required";
+  if half_line && node_count mod 2 <> 0 then
+    invalid_arg "gauss_hermite_lebesgue: half-line rule requires even K";
+  let nodes, weights = gauss_hermite node_count in
+  let jacobian = if half_line then scale /. sqrt 2.0
+    else sqrt 2.0 *. scale in
+  let values = Array.map (fun node ->
+    sqrt 2.0 *. scale *. (if half_line then Float.abs node else node)) nodes in
+  let log_weights = Array.mapi (fun index node ->
+    log weights.(index) +. node *. node +. log jacobian) nodes in
+  values, log_weights
+
 let rec prefix_sample_frames node_count = function
   | Const _ | Var _ as expression -> expression
   | Prim (loc, primitive, arguments) ->
@@ -85,7 +99,8 @@ let sum_axes ~axis count expression =
   go count expression
 
 let quadrature ~site ~values ~(log_weights : View.Tensor.t)
-    ~preserve_frame ~(slots : Ast.Sites.slot list) ~model
+    ~include_target_density ~preserve_frame
+    ~(slots : Ast.Sites.slot list) ~model
     ~env_shapes =
   if Array.length log_weights.view.shape <> 1 then
     raise (Quadrature_error "log_weights must have shape [K]");
@@ -99,6 +114,16 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t)
     raise (Quadrature_error "target site must be continuous");
   if preserve_frame < 0 || preserve_frame > Array.length target.frame then
     raise (Quadrature_error "preserve_frame exceeds target site frame rank");
+  let hoisted_conditions = List.filter (fun (name, role, _) ->
+    role = `Condition &&
+    let candidate = Ast.Sites.find name model_sites in
+    let probe = Sample (candidate.loc, candidate.name, candidate.frame,
+      candidate.dist) in
+    Array.length candidate.frame = preserve_frame
+    && Array.sub candidate.frame 0 preserve_frame
+       = Array.sub target.frame 0 preserve_frame
+    && not (List.mem site (Assess_expr.free_vars probe))) slots in
+  let hoisted_names = List.map (fun (name, _, _) -> name) hoisted_conditions in
   let slot_names = List.map (fun (name, _, _) -> name) slots in
   let latent = List.filter
     (fun candidate -> not (List.mem candidate.Ast.Sites.name slot_names))
@@ -132,14 +157,30 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t)
     |> Expand_rank.expand ~senv:(binding_shapes @ env_shapes) in
   let log_integrand = Assess_expr.assess_expr ~ns:"q."
     ~preserve_shape:expected_shape
-    ~exclude_density:(site :: List.filter_map (function
-      | name, `Maximize, _ -> Some name | _, `Condition, _ -> None) slots)
+    ~exclude_density:((if include_target_density then [] else [site])
+      @ List.filter_map (function
+      | name, `Maximize, _ -> Some name | _, `Condition, _ -> None) slots
+      @ hoisted_names)
     ~env_shapes:(binding_shapes @ env_shapes) prefixed density_slots in
   let weighted = rank 0 Add [const log_weights; log_integrand]
     |> Expand_rank.expand ~senv:(binding_shapes @ env_shapes) in
   let reduced = logsumexp_axis0 node_count weighted
     |> sum_axes ~axis:preserve_frame
          (Array.length target.frame - preserve_frame) in
+  let outer_density = List.fold_left (fun total (name, _, value) ->
+    let candidate = Ast.Sites.find name model_sites in
+    let dist = List.fold_left (fun dist (slot_name, _, slot_value) ->
+      Assess_expr.subst_dist ~from:slot_name ~to_:slot_value dist)
+      candidate.dist slots in
+    match Assess_expr.log_density_expr ~env_shapes ~loc:candidate.loc
+      candidate.frame dist value with
+    | None -> total
+    | Some density ->
+        let density = Assess_expr.sum_frame ~preserve:preserve_frame
+          candidate.frame density in
+        prim Add [total; density]) (Assess_expr.mk_zero
+      (Array.sub target.frame 0 preserve_frame)) hoisted_conditions in
+  let reduced = prim Add [reduced; outer_density] in
   let log_terms = Forward.wrap_bindings bindings weighted
     |> Expand_rank.expand ~senv:env_shapes in
   let log_marginal = Forward.wrap_bindings bindings reduced

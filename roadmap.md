@@ -499,6 +499,22 @@ Gamma / Beta / Dirichlet、または一般の切断正規が必要になった�
   materialization 0、`Buf.create` 30回 / 2,377,752 bytes、kernel 8.63 ms。
   broadcastはstride 0のviewのままだが、要素ごとの中間出力は確保される。
   `B=200` の完全検査は1137.6秒であり、当初の約100秒予測は不成立。
+- 13-5 の `_importance` は model/guide のsite frameへ粒子軸をprefixし、
+  `assess_expr ~preserve_shape:[P]` で `log p - log q` の配列を返す。
+  Normalの固定一様乱数5点で、全粒子が閉形式と `1e-11` で一致した。
+- 13-6 は同じGLMM modelを `Maximize` slotから `Condition` slotへ切り替え、
+  `gamma/tau` の事前密度を復活させた。対象 `a` に依存しない事前密度は
+  群ごとに重複しないよう内側求積の外へhoistする。
+- ガウスモデルのlog BFは閉形式に対し `K=8/16/32` で
+  `4.346e-3 / 9.667e-6 / 6.106e-11`。ロジスティックGLMM（G=64）は
+  外側 `K=24/32/40` で `25.015446 / 25.230260 / 25.282992`、
+  評価時間は `4.48 / 8.11 / 12.44` 秒。H1を強く支持し、最後の差は `0.0527`。
+  `tau` は `rho=log tau` 上で求積してJacobianを重みに加え、固定効果の
+  Lebesgue求積は13-3のMLE近傍へ中心化した。これは数値戦略であり、
+  `Condition` が評価するモデル事前分布は変更しない。
+
+以上により、同じ階層ロジスティックモデルから境界LRTとベイズファクターが
+slot roleと積分戦略の切替だけで得られ、北極星②③を達成した。
 
 **確認すべき性質**
 

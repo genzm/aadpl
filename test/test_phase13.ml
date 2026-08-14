@@ -112,6 +112,37 @@ let test_slot_roles () =
     (-.0.5 *. log (2.0 *. Float.pi) -. 2.0) condition;
   check (float 0.0) "Maximize excludes site density" 0.0 maximize
 
+let test_importance_log_weights () =
+  let particles = 5 in
+  let model = sample "z" [||]
+    (Ast.Normal.normal ~mu:"model_mu" ~sigma:"model_sigma") in
+  let guide = sample "z" [||]
+    (Ast.Normal.normal ~mu:"guide_mu" ~sigma:"guide_sigma") in
+  let env_shapes = [("model_mu", [||]); ("model_sigma", [||]);
+    ("guide_mu", [||]); ("guide_sigma", [||])] in
+  let program = Transform.Importance.importance ~particles ~slots:[]
+    ~model ~guide ~env_shapes in
+  check (list (pair string (array int))) "noise keeps particle axis"
+    [("%u.z", [|particles|])] program.noise;
+  let uniforms = tensor [|particles|] [|0.1; 0.25; 0.5; 0.7; 0.9|] in
+  let env = [("model_mu", scalar 0.0); ("model_sigma", scalar 1.0);
+    ("guide_mu", scalar 0.5); ("guide_sigma", scalar 1.5);
+    ("%u.z", uniforms)] in
+  let actual = Ast.Eval.eval env program.log_weights in
+  check (array int) "one log weight per particle" [|particles|]
+    actual.View.Tensor.view.View.Ndview.shape;
+  let log_normal x mu sigma =
+    -.0.5 *. log (2.0 *. Float.pi) -. log sigma
+    -. 0.5 *. ((x -. mu) /. sigma) ** 2.0 in
+  for index = 0 to particles - 1 do
+    let u = value uniforms index in
+    let z = 0.5 +. 1.5 *. sqrt 2.0 *. Ast.Eval.erfinv_impl (2.0 *. u -. 1.0) in
+    let expected = log_normal z 0.0 1.0 -. log_normal z 0.5 1.5 in
+    check (float 1e-11) (Printf.sprintf "particle %d log p-log q" index)
+      expected (value actual index)
+  done;
+  Transform.check_no_samples program.log_weights
+
 let test_gauss_hermite_rule () =
   List.iter (fun node_count ->
     let nodes, weights = Transform.Quadrature.gauss_hermite node_count in
@@ -181,6 +212,7 @@ let test_quadrature_gaussian_closed_form () =
       (fun weight -> log weight -. 0.5 *. log Float.pi) weights
       |> Transform.Quadrature.tensor in
     Transform.Quadrature.quadrature ~site:"a" ~values ~log_weights
+      ~include_target_density:false
       ~preserve_frame:0
       ~slots:[("y", `Condition, var "y_obs")] ~model ~env_shapes
   in
@@ -219,6 +251,67 @@ let test_quadrature_gaussian_closed_form () =
       check (float 1e-7) "quadrature tau FD" fd ad
   | _ -> assert false
 
+let test_gaussian_bayes_factor_closed_form () =
+  let model = let_ "theta" (sample "theta" [||]
+    (Ast.Normal.normal ~mu:"zero" ~sigma:"prior_scale"))
+    (sample "y" [||] (Ast.Normal.normal ~mu:"theta" ~sigma:"obs_scale")) in
+  let y = 1.3 and prior_scale = 0.8 and obs_scale = 0.6 in
+  let env_shapes = [("zero", [||]); ("prior_scale", [||]);
+    ("obs_scale", [||]); ("y_obs", [||]); ("theta_zero", [||])] in
+  let env = [("zero", scalar 0.0); ("prior_scale", scalar prior_scale);
+    ("obs_scale", scalar obs_scale); ("y_obs", scalar y);
+    ("theta_zero", scalar 0.0)] in
+  let h0 = Transform.build_elbo
+    ~slots:[("theta", `Maximize, var "theta_zero");
+            ("y", `Condition, var "y_obs")]
+    ~model ~guide:(const (scalar 0.0)) ~env_shapes in
+  let log_h0 = Ast.Eval.eval env h0.elbo |> fun result -> value result 0 in
+  let log_normal x sigma =
+    -.0.5 *. log (2.0 *. Float.pi) -. log sigma
+    -. 0.5 *. (x /. sigma) ** 2.0 in
+  let expected = log_normal y (sqrt (prior_scale *. prior_scale
+    +. obs_scale *. obs_scale)) -. log_normal y obs_scale in
+  let errors = List.map (fun node_count ->
+    let nodes, log_weights = Transform.Quadrature.gauss_hermite_lebesgue
+      ~scale:prior_scale node_count in
+    let h1 = Transform.Quadrature.quadrature ~site:"theta"
+      ~values:(const (tensor [|node_count|] nodes))
+      ~log_weights:(Transform.Quadrature.tensor log_weights)
+      ~include_target_density:true ~preserve_frame:0
+      ~slots:[("y", `Condition, var "y_obs")] ~model ~env_shapes in
+    let log_h1 = Ast.Eval.eval env h1.log_marginal
+      |> fun result -> value result 0 in
+    Float.abs ((log_h1 -. log_h0) -. expected)) [8; 16; 32] in
+  match errors with
+  | [e8; e16; e32] ->
+      Printf.printf "\nGaussian log BF errors K=8/16/32: %.3e %.3e %.3e\n"
+        e8 e16 e32;
+      check bool "Gaussian BF converges with K" true (e16 < e8 && e32 < e16);
+      check bool "Gaussian BF matches closed form" true (e32 < 1e-10)
+  | _ -> assert false
+
+let test_quadrature_hoists_global_condition () =
+  let groups = 5 and node_count = 5 in
+  let model = let_ "theta" (sample "theta" [||]
+    (Ast.Normal.normal ~mu:"zero" ~sigma:"one"))
+    (sample "a" [|groups|] (Ast.Normal.normal ~mu:"theta" ~sigma:"one")) in
+  let nodes, weights = Transform.Quadrature.gauss_hermite node_count in
+  let cells = Array.init (node_count * groups) (fun index ->
+    0.4 +. sqrt 2.0 *. nodes.(index / groups)) in
+  let log_weights = Array.map
+    (fun weight -> log weight -. 0.5 *. log Float.pi) weights
+    |> Transform.Quadrature.tensor in
+  let env_shapes = [("zero", [||]); ("one", [||]); ("theta_value", [||])] in
+  let program = Transform.Quadrature.quadrature ~site:"a"
+    ~values:(const (tensor [|node_count; groups|] cells)) ~log_weights
+    ~include_target_density:false ~preserve_frame:0
+    ~slots:[("theta", `Condition, var "theta_value")] ~model ~env_shapes in
+  let actual = Ast.Eval.eval [("zero", scalar 0.0); ("one", scalar 1.0);
+    ("theta_value", scalar 0.4)] program.log_marginal |> fun result -> value result 0 in
+  let expected = -.0.5 *. log (2.0 *. Float.pi) -. 0.5 *. 0.4 *. 0.4 in
+  check (float 1e-12) "global prior is counted once, not once per group"
+    expected actual
+
 let logistic_glmm_model ?replications groups =
   let parameter_frame = match replications with None -> [||] | Some n -> [|n|] in
   let group_frame = match replications with
@@ -239,8 +332,8 @@ let logistic_glmm_model ?replications groups =
         (Ast.Normal.normal ~mu:"zero" ~sigma:"tau"))
         (score likelihood)))
 
-let glmm_quadrature ~replications ~node_count ~groups ~tau_slot ~model
-    ~env_shapes =
+let glmm_quadrature ~replications ~node_count ~groups ~gamma_role ~tau_role
+    ~tau_slot ~model ~env_shapes =
   let nodes, weights = Transform.Quadrature.gauss_hermite node_count in
   let parameter_rank, site_shape, site_cells = match replications with
     | None -> 0, [|node_count; groups|], groups
@@ -255,9 +348,10 @@ let glmm_quadrature ~replications ~node_count ~groups ~tau_slot ~model
     (fun weight -> log weight -. 0.5 *. log Float.pi) weights
     |> Transform.Quadrature.tensor in
   Transform.Quadrature.quadrature ~site:"a" ~values ~log_weights
+    ~include_target_density:false
     ~preserve_frame:parameter_rank
-    ~slots:[("gamma", `Maximize, var "gamma_param");
-            ("tau", `Maximize, tau_slot)]
+    ~slots:[("gamma", gamma_role, var "gamma_param");
+            ("tau", tau_role, tau_slot)]
     ~model ~env_shapes
 
 type adam = { mutable mean : float; mutable variance : float }
@@ -404,6 +498,7 @@ let test_logistic_glmm_mle () =
   let fixed = [("zero", scalar 0.0); ("prior_gamma_scale", scalar 5.0);
     ("prior_tau_scale", scalar 1.0); ("x_obs", x); ("y_obs", y)] in
   let h0 = glmm_quadrature ~replications:None ~node_count:20 ~groups
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~tau_slot:(const (scalar 0.0)) ~model ~env_shapes:common_shapes in
   let h0_parameters = [("gamma_param", scalar 0.0)] in
   let h0_initial, h0_value = optimize_marginal ~steps:500 ~learning_rate:0.03
@@ -411,6 +506,7 @@ let test_logistic_glmm_mle () =
   let h1_shapes = ("rho_param", [||]) :: common_shapes in
   let tau_slot = prim Exp [var "rho_param"] in
   let h1 = glmm_quadrature ~replications:None ~node_count:20 ~groups ~tau_slot
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~model ~env_shapes:h1_shapes in
   let h1_parameters = [("gamma_param", scalar 0.0);
     ("rho_param", scalar (log 0.5))] in
@@ -420,6 +516,7 @@ let test_logistic_glmm_mle () =
   and tau = exp (value (List.assoc "rho_param" h1_parameters) 0) in
   let at_k node_count =
     let program = glmm_quadrature ~replications:None ~node_count ~groups
+      ~gamma_role:`Maximize ~tau_role:`Maximize
       ~tau_slot ~model ~env_shapes:h1_shapes in
     Ast.Eval.eval (h1_parameters @ fixed) program.log_marginal |> fun result ->
       value result 0 in
@@ -465,12 +562,14 @@ let test_boundary_lrt_bootstrap () =
     ("x_obs", data_frame); ("y_obs", data_frame)] in
   let zeros = const (filled parameter_frame 0.0) in
   let h0 = glmm_quadrature ~replications:(Some replications) ~node_count ~groups ~tau_slot:zeros
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~model ~env_shapes:common_shapes in
   let h0_gamma = filled parameter_frame 0.0 in
   let h0_loss, _ = optimize_batched ~steps:h0_steps ~learning_rate:0.05
     ~parameters:[("gamma_param", h0_gamma)] ~fixed h0.log_marginal in
   let probe_tau = const (filled parameter_frame 0.01) in
   let probe = glmm_quadrature ~replications:(Some replications)
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~node_count ~groups ~tau_slot:probe_tau ~model ~env_shapes:common_shapes in
   let probe_loss = Ast.Eval.eval (("gamma_param", h0_gamma) :: fixed)
     probe.log_marginal in
@@ -482,6 +581,7 @@ let test_boundary_lrt_bootstrap () =
   let h1_shapes = ("rho_param", parameter_frame) :: common_shapes in
   let tau_slot = prim Exp [var "rho_param"] in
   let h1 = glmm_quadrature ~replications:(Some replications) ~node_count ~groups
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~tau_slot ~model ~env_shapes:h1_shapes in
   let h1_gamma = copy_tensor h0_gamma
   and h1_rho = filled parameter_frame (log 0.3) in
@@ -519,8 +619,10 @@ let test_boundary_lrt_bootstrap () =
     Transform.Special.boundary_variance_component_p_value 1.0 in
   let k_check = if full then 15 else max 5 (node_count - 5) in
   let h0_check = glmm_quadrature ~replications:(Some replications) ~node_count:k_check ~groups
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~tau_slot:zeros ~model ~env_shapes:common_shapes in
   let h1_check = glmm_quadrature ~replications:(Some replications) ~node_count:k_check ~groups
+    ~gamma_role:`Maximize ~tau_role:`Maximize
     ~tau_slot ~model ~env_shapes:h1_shapes in
   let h0_check_values = Ast.Eval.eval (("gamma_param", h0_gamma) :: fixed)
     h0_check.log_marginal
@@ -548,6 +650,101 @@ let test_boundary_lrt_bootstrap () =
       (Float.abs (tail_at_one -. asymptotic_tail_at_one) < 0.08)
   end
 
+let test_logistic_glmm_bayes_factor () =
+  let full = Sys.getenv_opt "PHASE13_BF" = Some "1" in
+  let groups, observations, inner_nodes, outer_nodes =
+    if full then 64, 20, 15, [24; 32; 40]
+    else 16, 8, 10, [8; 12; 16] in
+  let true_gamma = 1.2 and true_tau = 0.7 in
+  let frame = [|groups; observations|] in
+  let x = View.Tensor.make frame and y = View.Tensor.make frame in
+  let latent = sample "a" [|groups|]
+    (Ast.Normal.normal ~mu:"zero" ~sigma:"true_tau")
+    |> Transform.Expand_rank.expand
+         ~senv:[("zero", [||]); ("true_tau", [||])] in
+  let _, latent_trace, _ = Ast.Simulate.simulate ~run_key:180L
+    [("zero", scalar 0.0); ("true_tau", scalar true_tau)] latent in
+  let a = List.assoc "a" latent_trace in
+  let key = Prng.Threefry.make_key ~run_key:181L
+    ~namespace:Prng.Threefry.ns_data in
+  for group = 0 to groups - 1 do
+    for observation = 0 to observations - 1 do
+      let index = group * observations + observation in
+      let xv = (float_of_int observation
+        -. 0.5 *. float_of_int (observations - 1))
+        /. (0.25 *. float_of_int observations) in
+      let eta = true_gamma *. xv +. value a group in
+      let probability = if eta >= 0.0 then 1.0 /. (1.0 +. exp (-.eta))
+        else let e = exp eta in e /. (1.0 +. e) in
+      let ctr = Prng.Threefry.make_ctr ~site_id:2 ~component:1
+        ~frame_index:index in
+      let bits, _ = Prng.Threefry.threefry2x64 ~key ~ctr in
+      View.Buf.set x.buf index xv;
+      View.Buf.set y.buf index
+        (if Prng.Threefry.to_open_unit bits < probability then 1.0 else 0.0)
+    done
+  done;
+  let evidence ~node_count ~alternative =
+    let gamma_nodes, gamma_log_weights =
+      Transform.Quadrature.gauss_hermite_lebesgue ~scale:0.3 node_count in
+    let gamma_nodes = Array.map (fun node -> node +. 1.1769) gamma_nodes in
+    let rho_nodes, tau_log_weights =
+      Transform.Quadrature.gauss_hermite_lebesgue ~scale:0.5 node_count in
+    let rho_nodes = Array.map (fun node -> node +. log 0.7810) rho_nodes in
+    let tau_nodes = Array.map exp rho_nodes in
+    let tau_log_weights = Array.mapi (fun index weight ->
+      weight +. rho_nodes.(index)) tau_log_weights in
+    let points = if alternative then node_count * node_count else node_count in
+    let gamma = View.Tensor.make [|points|]
+    and tau = View.Tensor.make [|points|]
+    and outer_log_weights = View.Tensor.make [|points|] in
+    for point = 0 to points - 1 do
+      let gi = if alternative then point / node_count else point
+      and ti = if alternative then point mod node_count else 0 in
+      View.Buf.set gamma.buf point gamma_nodes.(gi);
+      View.Buf.set tau.buf point (if alternative then tau_nodes.(ti) else 0.0);
+      View.Buf.set outer_log_weights.buf point
+        (gamma_log_weights.(gi)
+         +. if alternative then tau_log_weights.(ti) else 0.0)
+    done;
+    let parameter_frame = [|points|]
+    and data_frame = [|points; groups; observations|] in
+    let x_cells = View.Tensor.broadcast x ~axis:0 ~size:points
+    and y_cells = View.Tensor.broadcast y ~axis:0 ~size:points in
+    let model = logistic_glmm_model ~replications:points groups in
+    let env_shapes = [("zero", [||]); ("prior_gamma_scale", [||]);
+      ("prior_tau_scale", [||]); ("gamma_param", parameter_frame);
+      ("tau_param", parameter_frame); ("x_obs", data_frame);
+      ("y_obs", data_frame)] in
+    let program = glmm_quadrature ~replications:(Some points)
+      ~node_count:inner_nodes
+      ~groups ~gamma_role:`Condition
+      ~tau_role:(if alternative then `Condition else `Maximize)
+      ~tau_slot:(var "tau_param") ~model ~env_shapes in
+    let weighted = prim Add [const outer_log_weights; program.log_marginal] in
+    let expression = Transform.Quadrature.logsumexp_axis0 points weighted in
+    let env = [("zero", scalar 0.0); ("prior_gamma_scale", scalar 5.0);
+      ("prior_tau_scale", scalar 1.0); ("gamma_param", gamma);
+      ("tau_param", tau); ("x_obs", x_cells); ("y_obs", y_cells)] in
+    let started = Unix.gettimeofday () in
+    let result = Ast.Eval.eval env expression |> fun result -> value result 0 in
+    result, Unix.gettimeofday () -. started
+  in
+  let results = List.map (fun node_count ->
+    let h0, h0_seconds = evidence ~node_count ~alternative:false
+    and h1, h1_seconds = evidence ~node_count ~alternative:true in
+    node_count, h1 -. h0, h0_seconds +. h1_seconds) outer_nodes in
+  match results with
+  | [(k4, bf4, t4); (k6, bf6, t6); (k8, bf8, t8)] ->
+      Printf.printf "\nLogistic GLMM log BF K=%d/%d/%d: %.6f %.6f %.6f; seconds %.3f %.3f %.3f\n"
+        k4 k6 k8 bf4 bf6 bf8 t4 t6 t8;
+      if full then check bool "same GLMM favors random effects" true (bf8 > 0.0);
+      check bool "log BF converges with K" true
+        (Float.abs (bf8 -. bf6) < Float.abs (bf6 -. bf4));
+      if full then check bool "last two log BF values agree" true
+        (Float.abs (bf8 -. bf6) < 0.2)
+  | _ -> assert false
+
 let () =
   run "Phase 13" [
     "13-0 discrete observations", [
@@ -565,11 +762,23 @@ let () =
       test_case "Gauss-Hermite moments" `Quick test_gauss_hermite_rule;
       test_case "Gaussian closed marginal" `Quick
         test_quadrature_gaussian_closed_form;
+      test_case "hoists global Condition density" `Quick
+        test_quadrature_hoists_global_condition;
     ];
     "13-3 logistic marginal MLE", [
       test_case "H0 and H1 fixed-iteration MLE" `Slow test_logistic_glmm_mle;
     ];
     "13-4 boundary LRT", [
       test_case "vectorized null bootstrap" `Slow test_boundary_lrt_bootstrap;
+    ];
+    "13-5 importance", [
+      test_case "preserves particle log weights" `Quick
+        test_importance_log_weights;
+    ];
+    "13-6 Bayes factor", [
+      test_case "Gaussian closed form" `Quick
+        test_gaussian_bayes_factor_closed_form;
+      test_case "same logistic GLMM, Condition slots" `Slow
+        test_logistic_glmm_bayes_factor;
     ];
   ]

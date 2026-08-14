@@ -235,6 +235,8 @@ let assess_expr ?(ns = "a.") ?(preserve_shape = [||])
         | _ -> (rewrite senv e, go senv e)
       and density_of senv loc name frame dist =
         if List.mem name exclude_density then zero ()
+        else if Array.length frame < preserve then
+          failwith "assess_expr: density frame shorter than preserved frame"
         else
           let slot = List.assoc name slots in
           match log_density_expr ~env_shapes:senv ~loc frame dist slot with
