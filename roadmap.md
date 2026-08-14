@@ -502,9 +502,17 @@ Gamma / Beta / Dirichlet、または一般の切断正規が必要になった�
 - 13-5 の `_importance` は model/guide のsite frameへ粒子軸をprefixし、
   `assess_expr ~preserve_shape:[P]` で `log p - log q` の配列を返す。
   Normalの固定一様乱数5点で、全粒子が閉形式と `1e-11` で一致した。
+  正規化や `log Z` への縮約は行わず、`preserve_shape` と既存のframe prefix
+  だけで実現したため、新しい意味論的機構は追加していない。
 - 13-6 は同じGLMM modelを `Maximize` slotから `Condition` slotへ切り替え、
   `gamma/tau` の事前密度を復活させた。対象 `a` に依存しない事前密度は
-  群ごとに重複しないよう内側求積の外へhoistする。
+  内側求積の外へhoistする。**これは最適化ではなく正しさの修正である。**
+  内側に置くと $p(\gamma)p(\tau)$ を群ごとに掛け、log evidenceへ
+  $(G-1)(\log p(\gamma)+\log p(\tau))$ の系統誤差が入る。$G=64$ では
+  典型的に約160 natsにもなる。$\gamma$ の事前はH0/H1差で部分的に相殺するため、
+  値の妥当性やK収束だけでは検出しにくい。frame rankが`preserve_frame`と
+  一致し、先頭frameが対象と揃い、対象siteを自由変数に含まない
+  `Condition` だけを機械的にhoistする。観測密度は内側に残る。
 - ガウスモデルのlog BFは閉形式に対し `K=8/16/32` で
   `4.346e-3 / 9.667e-6 / 6.106e-11`。ロジスティックGLMM（G=64）は
   外側 `K=24/32/40` で `25.015446 / 25.230260 / 25.282992`、
@@ -512,9 +520,22 @@ Gamma / Beta / Dirichlet、または一般の切断正規が必要になった�
   `tau` は `rho=log tau` 上で求積してJacobianを重みに加え、固定効果の
   Lebesgue求積は13-3のMLE近傍へ中心化した。これは数値戦略であり、
   `Condition` が評価するモデル事前分布は変更しない。
+- 同じデータに対し $2\log\Lambda=54.0$、
+  $2\log BF_{10}=50.6$。差 `3.4` は追加パラメータ1個に対する
+  $\log G=4.16$ のBIC型補正と同じオーダーで、独立な頻度論変換と
+  ベイズ変換が整合する相互検証になった。$\log BF_{10}\approx25.3$、
+  すなわち $BF_{10}\approx10^{11}$ でH1を決定的に支持する。
 
 以上により、同じ階層ロジスティックモデルから境界LRTとベイズファクターが
 slot roleと積分戦略の切替だけで得られ、北極星②③を達成した。
+
+**Phase 13 完了時点で未検証のもの**
+
+- `Restrict` を含む分布代数の閉包
+- 離散観測siteに対するSBC
+- pretty-printer / parser のround-trip（設計文書18章）
+- 一般のTruncNormalとDirichlet
+- 測度の接空間 $T(M\,\tau)$
 
 **確認すべき性質**
 
