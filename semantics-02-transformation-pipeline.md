@@ -229,6 +229,42 @@ trace 上の対数密度を**式として**構成する。
 - $\Post$: 各 seed に対する勾配式
 - $\Inv$: **内積等式** $\langle L(v), u\rangle = \langle v, L^{*}(u)\rangle$。これが AD の正しさのほぼ全部を捕捉する
 
+### 2.3 `Scan`（有界な逐次軸）
+
+コア構文は値を返す tuple ではなく、`Let` と同型の複数束縛構成子とする。
+
+```
+Scan (loc,
+      { steps;
+        carries = [(z₁, init₁, next₁); ...; (zₘ, initₘ, nextₘ)];
+        inputs  = [(x₁, xs₁); ...; (xₙ, xsₙ)];
+        collect; reverse },
+      continuation)
+```
+
+next 式は旧 carry と当該ステップの input cell を読み、すべて同時に更新される。`collect=false` なら continuation に最終 carry、`collect=true` なら更新後の carry 軌跡 `[z¹;...;zᵀ]` を束縛する。Scan 式全体の値は continuation の値であり、**1 式 = 1 テンソル**を変えない。
+
+- $\Pr$: `steps > 0` は静的定数。各 input の先頭軸長が `steps`。carry 名と input 名は互いに一意。各 next の形状が対応する init の形状と一致。next 式に `Sample` / `Score` が存在しない
+- $\Post$: `collect=false` の carry 束縛形状は init と同じ。`collect=true` は `[steps; init shape...]`
+- $\Inv$-1: 有限展開した `Let` 列との評価結果がビット一致
+- $\Inv$-2: 累積和・累積積が閉形式と一致
+- $\Inv$-3: Scan を含む線形プログラムの内積等式
+- $\Inv$-4: JVP が閉形式および有限差分と一致
+- $\Inv$-5: reverse Scan が、input を完全 reverse した forward Scan とビット一致
+
+reverse は各 input の先頭軸に `Vslice (steps-1, -1, -1)` を適用する。これは負 stride の view で実体化を要しない。**完全 reverse は全単射なので随伴も同じ reverse**である。一般の部分 slice は自己随伴ではなく、既存の `Adjoint_view` による scatter-add が随伴である。
+
+**変換境界:** `expand_rank` は init、input、next、continuation の各領域へ入り、body では carry shape と input の先頭軸を除いた cell shape を `senv` に加える。`fuse_views` は Scan を越えて view を融合しない。各領域を局所的に処理しても、binder 境界または異なる時刻をまたぐ融合は禁止する。Scan₁ では `grad` の入口が Scan を loc 付き `Grad_error` で拒否する。
+
+**Scan₂ の局所線形化:** `unzip` 自体は再帰変換ではない。Scan の body 境界で各 next 式に既存の `Forward.forward` を適用し、生成名が一意なまま束縛列を連結する。複数の primal/tangent 出力を保持する薄い `forward_many` / `unzip_many` を境界に置くが、式の再帰、束縛の分類、線形性検査は既存実装を変えない。
+
+1. tangent 束縛または tangent 出力から直接参照される primal 束縛を residual frontier $R$ とする。primal Scan は通常の carry 更新に加え、更新前 carry $z_t$ と $R_t$ を hidden carry として保存し、ユーザの `collect` にかかわらず内部軌跡を collect する。更新前 carry は `pre^{next}=z` という hidden carry の更新後軌跡として `[z_0;...;z_{T-1}]` を得る
+2. tangent Scan は tangent carry、input tangent、共有パラメータ tangent、および保存した $z_t,R_t$ を入力として正順に実行する。時刻合わせは更新後 $z_{t+1}$ ではなく、body が読んだ更新前 $z_t$ で固定する
+3. 複数 carry の局所転置は `transpose_many` で行う。これは随伴規則の追加ではなく、複数の `(tangent_out, cotangent_var)` を cotangent map に初期投入した後、既存の束縛逆走を一度実行する一般化である。現在の `transpose` はその単一出力特殊形とする
+4. 局所随伴を steps 逆順の Scan で実行する。carry 随伴は逆向きに持ち回り、時系列 input の随伴は最後に再 reverse して元の添字順へ戻す。共有パラメータの随伴は時刻ごとの寄与を collect せず、**随伴 Scan の hidden carry に加算して持ち回る**。これにより共有パラメータ随伴の追加メモリは、時間長 $T$ に対して $O(1)$ である
+
+residual 軌跡と更新前 carry 軌跡は checkpointing を行わず全保存する。時変線形 Scan $z_{t+1}=a_tz_t$ の $\partial z_T/\partial a_s$ を閉形式と照合し、`z_pre` / `z_post` の取り違えを狙い撃ちで検査する。
+
 ---
 
 ## 3. パイプラインの固定
