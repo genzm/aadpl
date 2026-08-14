@@ -12,7 +12,7 @@ let eval_reparam ~run_key ~env ~senv e =
   let sites = Ast.Sites.collect_sites e in
   let e = Transform.Reparam.reparam ~sites e in
   let bindings, result = Transform.Reparam.elim_samples ~sites e in
-  let e = Transform.Forward.wrap_bindings bindings result in
+  let e = Transform.Forward.wrap_let_bindings bindings result in
   let noise = Ast.Sites.draw_noise ~run_key sites in
   let noise_shapes =
     List.map

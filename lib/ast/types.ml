@@ -79,6 +79,10 @@ and dist =
     }
   | D_product of dist * dist
 
+type binding =
+  | Let_binding of string * expr
+  | Scan_binding of loc * scan
+
 let loc_of = function
   | Const (l, _) | Var (l, _) | Prim (l, _, _) | Let (l, _, _, _)
   | Scan (l, _, _) | Rank (l, _, _, _) | Sample (l, _, _, _) | Score (l, _) -> l

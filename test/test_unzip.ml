@@ -192,13 +192,13 @@ let test_exp_classification () =
   let seeds = [Transform.Forward.tangent_name "x"] in
   let uz = Transform.Unzip.unzip fwd ~seeds in
   (* exp(%p0) should be in primal bindings (no tangent dependency) *)
-  let has_exp_in_primal = List.exists (fun (_, rhs) ->
-    match rhs with Prim (_, Exp, _) -> true | _ -> false
+  let has_exp_in_primal = List.exists (function
+    | Let_binding (_, Prim (_, Exp, _)) -> true | _ -> false
   ) uz.primal_bindings in
   Alcotest.(check bool) "exp in primal" true has_exp_in_primal;
   (* tangent bindings should contain only linear ops *)
-  let has_exp_in_tangent = List.exists (fun (_, rhs) ->
-    match rhs with Prim (_, Exp, _) -> true | _ -> false
+  let has_exp_in_tangent = List.exists (function
+    | Let_binding (_, Prim (_, Exp, _)) -> true | _ -> false
   ) uz.tangent_bindings in
   Alcotest.(check bool) "no exp in tangent" false has_exp_in_tangent;
   (* and eval should still match *)

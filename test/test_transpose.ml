@@ -50,9 +50,11 @@ let check_ip msg vars expr =
   let tangent_input_shapes = List.map (fun (s, _, dv) ->
     (Transform.Forward.tangent_name s, dv.Tensor.view.Ndview.shape)) vars in
   let senv = ref (input_shapes @ tangent_input_shapes) in
-  List.iter (fun (name, rhs) ->
-    let sh = Transform.Expand_rank.infer_shape !senv rhs in
-    senv := (name, sh) :: !senv
+  List.iter (function
+    | Let_binding (name, rhs) ->
+      let sh = Transform.Expand_rank.infer_shape !senv rhs in
+      senv := (name, sh) :: !senv
+    | Scan_binding _ -> Alcotest.fail "unexpected Scan binding"
   ) (uz_tmp.primal_bindings @ uz_tmp.tangent_bindings);
   let out_shape = Transform.Expand_rank.infer_shape !senv uz_tmp.tangent_out in
   (* Random cotangent *)
@@ -270,9 +272,11 @@ let check_grad_fd msg vars expr =
     ~cotangent_var:"%ct_out" in
   (* Output shape *)
   let senv = ref all_input_shapes in
-  List.iter (fun (name, rhs) ->
-    let sh = Transform.Expand_rank.infer_shape !senv rhs in
-    senv := (name, sh) :: !senv
+  List.iter (function
+    | Let_binding (name, rhs) ->
+      let sh = Transform.Expand_rank.infer_shape !senv rhs in
+      senv := (name, sh) :: !senv
+    | Scan_binding _ -> Alcotest.fail "unexpected Scan binding"
   ) (uz.primal_bindings @ uz.tangent_bindings);
   let out_shape = Transform.Expand_rank.infer_shape !senv uz.tangent_out in
   (* Use u = all-ones cotangent (sum reduction → gradient of sum(f(x))) *)

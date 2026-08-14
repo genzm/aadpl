@@ -9,9 +9,9 @@
 open Ast.Types
 
 type unzipped = {
-  primal_bindings  : (string * expr) list;
+  primal_bindings  : binding list;
   primal_out       : expr;
-  tangent_bindings : (string * expr) list;
+  tangent_bindings : binding list;
   tangent_out      : expr;
 }
 
@@ -32,22 +32,45 @@ let rec free_vars (e : expr) : SS.t =
   | Sample _ -> failwith "free_vars: Sample not supported"
   | Score _ -> failwith "free_vars: Score not supported"
 
+let free_vars_scan (scan : scan) : SS.t =
+  let names =
+    List.fold_left (fun names (name, _, _) -> SS.add name names) SS.empty
+      scan.carries
+    |> fun names ->
+      List.fold_left (fun names (name, _) -> SS.add name names) names scan.inputs
+  in
+  let variables = List.fold_left (fun variables (_, init, _) ->
+    SS.union variables (free_vars init)) SS.empty scan.carries in
+  let variables = List.fold_left (fun variables (_, input) ->
+    SS.union variables (free_vars input)) variables scan.inputs in
+  List.fold_left (fun variables (_, _, next) ->
+    SS.union variables (SS.diff (free_vars next) names)) variables scan.carries
+
+let binding_names = function
+  | Let_binding (name, _) -> [name]
+  | Scan_binding (_, scan) -> List.map (fun (name, _, _) -> name) scan.carries
+
+let binding_free_vars = function
+  | Let_binding (_, rhs) -> free_vars rhs
+  | Scan_binding (_, scan) -> free_vars_scan scan
+
 (* --- tangent dependency propagation --- *)
 
 (* Walk bindings left-to-right. A binding is tangent-dependent if any
    free variable in its RHS is in the tangent_deps set. *)
-let classify (bs : (string * expr) list) ~(seeds : SS.t)
-    : (string * expr) list * (string * expr) list * SS.t =
+let classify (bs : binding list) ~(seeds : SS.t)
+    : binding list * binding list * SS.t =
   let tangent_deps = ref seeds in
   let primal = ref [] in
   let tangent = ref [] in
-  List.iter (fun (name, rhs) ->
-    let fv = free_vars rhs in
+  List.iter (fun binding ->
+    let fv = binding_free_vars binding in
     if SS.is_empty (SS.inter fv !tangent_deps) then
-      primal := (name, rhs) :: !primal
+      primal := binding :: !primal
     else begin
-      tangent := (name, rhs) :: !tangent;
-      tangent_deps := SS.add name !tangent_deps
+      tangent := binding :: !tangent;
+      List.iter (fun name -> tangent_deps := SS.add name !tangent_deps)
+        (binding_names binding)
     end
   ) bs;
   (List.rev !primal, List.rev !tangent, !tangent_deps)
@@ -56,7 +79,7 @@ let classify (bs : (string * expr) list) ~(seeds : SS.t)
 
 (* Check that in each tangent binding, tangent-dependent arguments appear
    only in linear positions. Returns None if OK, Some msg if violation. *)
-let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
+let check_linearity (tangent_bs : binding list) (deps : SS.t)
     : string option =
   let is_dep e = not (SS.is_empty (SS.inter (free_vars e) deps)) in
   let rec check_expr (e : expr) : string option =
@@ -125,13 +148,15 @@ let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
     List.fold_left (fun acc a ->
       match acc with Some _ -> acc | None -> check_expr a) None args
   in
-  List.fold_left (fun acc (name, rhs) ->
+  List.fold_left (fun acc binding ->
     match acc with
     | Some _ -> acc
-    | None ->
+    | None -> (match binding with
+      | Scan_binding _ -> None
+      | Let_binding (name, rhs) ->
       match check_expr rhs with
       | Some msg -> Some (Printf.sprintf "binding %s: %s" name msg)
-      | None -> None
+      | None -> None)
   ) None tangent_bs
 
 (* --- unzip --- *)
@@ -140,10 +165,11 @@ let unzip ((bs, p_out, t_out) : Forward.bindings * expr * expr)
     ~(seeds : string list) : unzipped =
   (* Detect binding name shadowing (silent misclassification otherwise) *)
   let seen = Hashtbl.create (List.length bs) in
-  List.iter (fun (name, _) ->
-    if Hashtbl.mem seen name then
-      failwith ("unzip: duplicate binding name (shadowing): " ^ name)
-    else Hashtbl.replace seen name ()
+  List.iter (fun binding ->
+    List.iter (fun name ->
+      if Hashtbl.mem seen name then
+        failwith ("unzip: duplicate binding name (shadowing): " ^ name)
+      else Hashtbl.replace seen name ()) (binding_names binding)
   ) bs;
   let seed_set = SS.of_list seeds in
   let (primal_bs, tangent_bs, deps) = classify bs ~seeds:seed_set in
@@ -152,7 +178,7 @@ let unzip ((bs, p_out, t_out) : Forward.bindings * expr * expr)
    | None -> ()
    | Some msg -> failwith ("unzip linearity violation: " ^ msg));
   (* also check tangent_out *)
-  (match check_linearity [("__out__", t_out)] deps with
+  (match check_linearity [Let_binding ("__out__", t_out)] deps with
    | None -> ()
    | Some msg -> failwith ("unzip linearity violation in tangent_out: " ^ msg));
   { primal_bindings = primal_bs;

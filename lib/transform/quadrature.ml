@@ -189,8 +189,8 @@ let quadrature ~site ~values ~(log_weights : View.Tensor.t)
         prim Add [total; density]) (Assess_expr.mk_zero
       (Array.sub target.frame 0 preserve_frame)) hoisted_conditions in
   let reduced = prim Add [reduced; outer_density] in
-  let log_terms = Forward.wrap_bindings bindings weighted
+  let log_terms = Forward.wrap_let_bindings bindings weighted
     |> Expand_rank.expand ~senv:env_shapes in
-  let log_marginal = Forward.wrap_bindings bindings reduced
+  let log_marginal = Forward.wrap_let_bindings bindings reduced
     |> Expand_rank.expand ~senv:env_shapes in
   { log_marginal; log_terms; sites = []; node_count }

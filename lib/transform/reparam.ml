@@ -110,7 +110,7 @@ let reparam ?sites (e : expr) : expr =
 exception Elim_error of loc * string
 
 let elim_samples ~(sites : Ast.Sites.site list) (e : expr) :
-    Forward.bindings * expr =
+    (string * expr) list * expr =
   let rec go e =
     match e with
     | Const _ | Var _ -> ([], e)

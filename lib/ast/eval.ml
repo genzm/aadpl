@@ -394,7 +394,8 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
     let v1 = eval env e1 in
     eval ((s, v1) :: env) e2
   | Scan (loc, scan, continuation) ->
-    eval_scan env loc scan continuation
+    let outputs = run_scan env loc scan in
+    eval (outputs @ env) continuation
   | Rank (loc, _, _, _) ->
     raise (Eval_error (loc, "Rank node must be expanded before eval"))
   | Sample (loc, _, _, _) ->
@@ -564,8 +565,7 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
           Tensor.of_buf dst (Ndview.contiguous os)
         | _ -> raise (Eval_error (loc, "wrong number of arguments")))))
 
-and eval_scan (env : env) (loc : Types.loc) (scan : Types.scan)
-    (continuation : Types.expr) : Types.value =
+and run_scan (env : env) (loc : Types.loc) (scan : Types.scan) : env =
   let fail at message = raise (Eval_error (at, message)) in
   if scan.steps <= 0 then fail loc "Scan steps must be positive";
   let names =
@@ -651,23 +651,28 @@ and eval_scan (env : env) (loc : Types.loc) (scan : Types.scan)
         write_cell (List.assoc name trajectories) step value) next_values;
     carries := next_values
   done;
-  let outputs = if scan.collect then trajectories else !carries in
-  eval (outputs @ env) continuation
+  if scan.collect then trajectories else !carries
+
+let eval_bindings (env : env) (bindings : Types.binding list) : env =
+  List.fold_left (fun environment binding ->
+    match binding with
+    | Types.Let_binding (name, expression) ->
+      (name, eval environment expression) :: environment
+    | Types.Scan_binding (loc, scan) ->
+      run_scan environment loc scan @ environment) env bindings
 
 (* Evaluate loss + grads with shared primal computation.
    primal_bindings are evaluated once; loss_body and each grad_body
    reuse the same environment. *)
 let eval_grad (env : env)
-    ~(primal_bindings : (string * Types.expr) list)
+    ~(primal_bindings : Types.binding list)
     ~(loss_body : Types.expr)
-    ~(grad_bindings : (string * Types.expr) list)
+    ~(grad_bindings : Types.binding list)
     ~(grad_bodies : (string * Types.expr) list)
     : Types.value * (string * Types.value) list =
-  let env = List.fold_left (fun acc (name, e) ->
-    (name, eval acc e) :: acc) env primal_bindings in
+  let env = eval_bindings env primal_bindings in
   let loss = eval env loss_body in
-  let env = List.fold_left (fun acc (name, e) ->
-    (name, eval acc e) :: acc) env grad_bindings in
+  let env = eval_bindings env grad_bindings in
   let grads = List.map (fun (param, body) ->
     (param, eval env body)) grad_bodies in
   (loss, grads)

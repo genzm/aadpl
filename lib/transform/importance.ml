@@ -64,8 +64,8 @@ let importance ~particles ~(slots : Ast.Sites.slot list) ~model ~guide
   let guide_ld = Assess_expr.assess_expr ~ns:"ig."
     ~preserve_shape:[|particles|] ~env_shapes:assess_shapes guide density_slots in
   let log_weights = prim Sub [model_ld; guide_ld]
-    |> Forward.wrap_bindings sample_bindings
-    |> Forward.wrap_bindings bindings
+    |> Forward.wrap_let_bindings sample_bindings
+    |> Forward.wrap_let_bindings bindings
     |> Expand_rank.expand ~senv:(noise @ env_shapes)
     |> Desugar.fuse_views in
   {log_weights; sites; noise}

@@ -157,10 +157,12 @@ let rec log_density_raw loc dist x =
             subst ~from:(Forward.tangent_name v) ~to_:(mk_scalar 0.0) acc)
           e other_vars
       in
-      let bs' = List.map (fun (name, e) -> (name, inline e)) bs in
+      let bs' = List.map (function
+        | Let_binding (name, e) -> Let_binding (name, inline e)
+        | Scan_binding _ -> failwith "assess_expr: Scan in distribution inverse") bs in
       let tangent' = inline tangent in
       (* Primal seed: bind local_var to x (the slot value) *)
-      let primal_seed = [ (local_var, x) ] in
+      let primal_seed = [ Let_binding (local_var, x) ] in
       (* u = inv(x), jac = d(inv)/dx *)
       let u_var = Forward.gensym "u" in
       let jac_var = Forward.gensym "jac" in

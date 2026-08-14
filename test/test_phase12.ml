@@ -243,7 +243,7 @@ let test_hierarchical_coupling () =
   let noise = Ast.Sites.draw_noise ~run_key:83L sites in
   List.iter
     (fun site ->
-      let expression = Transform.Forward.wrap_bindings bindings
+      let expression = Transform.Forward.wrap_let_bindings bindings
         (var (Ast.Sites.trace_name site))
         |> Transform.Expand_rank.expand ~senv:(shapes @ List.map
              (fun (name, sample) -> name, sample.View.Tensor.view.View.Ndview.shape)
@@ -616,7 +616,7 @@ let test_leading_frame_hierarchical_coupling () =
     |> Transform.Reparam.elim_samples ~sites in
   let noise = Ast.Sites.draw_noise ~run_key:169L sites in
   List.iter (fun site ->
-    let expression = Transform.Forward.wrap_bindings bindings
+    let expression = Transform.Forward.wrap_let_bindings bindings
       (var (Ast.Sites.trace_name site))
       |> Transform.Expand_rank.expand ~senv:(shapes @ List.map
         (fun (name, sample) ->

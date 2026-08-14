@@ -40,8 +40,10 @@ let check_no_samples (e : expr) =
     | Let (_, _, e1, e2) ->
         walk e1;
         walk e2
-    | Scan (l, _, _) ->
-        raise (Grad_error (l, "Scan is not differentiable yet"))
+    | Scan (_, scan, continuation) ->
+        List.iter (fun (_, init, next) -> walk init; walk next) scan.carries;
+        List.iter (fun (_, input) -> walk input) scan.inputs;
+        walk continuation
     | Rank (_, _, _, args) -> List.iter walk args
   in
   walk e
@@ -50,9 +52,9 @@ type grad_program = {
   loss : expr;
   grads : (string * expr) list;
   (* Shared-evaluation form: primal computed once *)
-  primal_bindings : (string * expr) list;
+  primal_bindings : binding list;
   loss_body : expr;
-  grad_bindings : (string * expr) list;
+  grad_bindings : binding list;
   grad_bodies : (string * expr) list; (* (param_name, grad_body_expr) *)
 }
 
@@ -114,7 +116,7 @@ let build_elbo ~(slots : Ast.Sites.slot list) ~model ~guide
     Assess_expr.assess_expr ~ns:"g." ~env_shapes:assess_shapes guide density_slots
   in
   let body = prim Sub [ model_ld; guide_ld ] in
-  let elbo = Forward.wrap_bindings bindings body in
+  let elbo = Forward.wrap_let_bindings bindings body in
   let elbo = Expand_rank.expand ~senv:(noise @ env_shapes) elbo in
   let elbo = Desugar.fuse_views elbo in
   { elbo; sites; noise }
@@ -136,10 +138,23 @@ let grad ~(param_shapes : (string * int array) list)
   in
   let bs, forward_shapes =
     List.fold_left
-      (fun (acc, senv) (name, rhs) ->
+      (fun (acc, senv) binding -> match binding with
+      | Scan_binding (loc, scan) ->
+        let output_name, _, _ = List.hd scan.carries in
+        let expanded = Expand_rank.expand ~senv
+          (Scan (loc, scan, var output_name)) in
+        let scan = match expanded with
+          | Scan (_, scan, _) -> scan
+          | _ -> assert false in
+        let output_shapes = List.map (fun (name, init, _) ->
+          let shape = Expand_rank.infer_shape senv init in
+          name, if scan.collect then Array.append [|scan.steps|] shape else shape)
+          scan.carries in
+        (acc @ [Scan_binding (loc, scan)], output_shapes @ senv)
+      | Let_binding (name, rhs) ->
         let rhs = Expand_rank.expand ~senv rhs in
         let shape = Expand_rank.infer_shape senv rhs in
-        (acc @ [ (name, rhs) ], (name, shape) :: senv))
+        (acc @ [ Let_binding (name, rhs) ], (name, shape) :: senv))
       ([], forward_input_shapes) bs
   in
   let primal_out = Expand_rank.expand ~senv:forward_shapes primal_out in
@@ -159,15 +174,26 @@ let grad ~(param_shapes : (string * int array) list)
     | Prim (l, p, args) -> Prim (l, p, List.map subst_data_tangents args)
     | Let (l, s, e1, e2) ->
         Let (l, s, subst_data_tangents e1, subst_data_tangents e2)
-    | Scan _ ->
-        failwith "grad: Scan reached data tangent substitution"
+    | Scan (loc, scan, continuation) ->
+        let carries = List.map (fun (name, init, next) ->
+          name, subst_data_tangents init, subst_data_tangents next) scan.carries in
+        let inputs = List.map (fun (name, input) ->
+          name, subst_data_tangents input) scan.inputs in
+        Scan (loc, {scan with carries; inputs}, subst_data_tangents continuation)
     | Rank _ ->
         failwith "grad: Rank remained after expand while zeroing data tangents"
     | Sample _ | Score _ -> e
   in
   let bs =
     if data_shapes = [] then bs
-    else List.map (fun (n, e) -> (n, subst_data_tangents e)) bs
+    else List.map (function
+      | Let_binding (n, e) -> Let_binding (n, subst_data_tangents e)
+      | Scan_binding (loc, scan) ->
+        let expression = subst_data_tangents
+          (Scan (loc, scan, var (let name, _, _ = List.hd scan.carries in name))) in
+        match expression with
+        | Scan (_, scan, _) -> Scan_binding (loc, scan)
+        | _ -> assert false) bs
   in
   let tangent_out =
     if data_shapes = [] then tangent_out else subst_data_tangents tangent_out
@@ -214,7 +240,8 @@ let grad ~(param_shapes : (string * int array) list)
       tr.Transpose.grad_map
   in
   let grads = List.map (fun (p, _, w) -> (p, w)) grad_bodies_and_wrapped in
-  let grad_bindings = ("%ct", const ct_tensor) :: tr.Transpose.grad_bindings in
+  let grad_bindings = Let_binding ("%ct", const ct_tensor)
+    :: tr.Transpose.grad_bindings in
   let grad_bodies = List.map (fun (seed, body) ->
     (List.assoc seed seed_to_param, body)) tr.Transpose.grad_map in
   {

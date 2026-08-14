@@ -254,7 +254,7 @@ next 式は旧 carry と当該ステップの input cell を読み、すべて�
 
 reverse は各 input の先頭軸に `Vslice (steps-1, -1, -1)` を適用する。これは負 stride の view で実体化を要しない。**完全 reverse は全単射なので随伴も同じ reverse**である。一般の部分 slice は自己随伴ではなく、既存の `Adjoint_view` による scatter-add が随伴である。
 
-**変換境界:** `expand_rank` は init、input、next、continuation の各領域へ入り、body では carry shape と input の先頭軸を除いた cell shape を `senv` に加える。`fuse_views` は Scan を越えて view を融合しない。各領域を局所的に処理しても、binder 境界または異なる時刻をまたぐ融合は禁止する。Scan₁ では `grad` の入口が Scan を loc 付き `Grad_error` で拒否する。
+**変換境界:** `expand_rank` は init、input、next、continuation の各領域へ入り、body では carry shape と input の先頭軸を除いた cell shape を `senv` に加える。`fuse_views` は Scan を越えて view を融合しない。各領域を局所的に処理しても、binder 境界または異なる時刻をまたぐ融合は禁止する。Scan₂ では `forward` が body 境界を局所線形化し、`transpose` が逆向き Scan を構成する。body 内の `Sample` / `Score` は引き続き loc 付きエラーで拒否する。
 
 **Scan₂ の局所線形化:** `unzip` 自体は再帰変換ではない。Scan の body 境界で各 next 式に既存の `Forward.forward` を適用し、生成名が一意なまま束縛列を連結する。複数の primal/tangent 出力を保持する薄い `forward_many` / `unzip_many` を境界に置くが、式の再帰、束縛の分類、線形性検査は既存実装を変えない。
 
