@@ -105,6 +105,27 @@ let test_cumulative_sum_and_product () =
       ~inputs:[("x", const input)] ~collect:true ~reverse:false (var "acc") in
   check_values "cumulative sum" expected_sum (Ast.Eval.eval [] sum)
 
+let test_attention_head_split_view () =
+  let input = tensor [|2; 3; 8|]
+    (List.init 48 float_of_int) in
+  let expression =
+    prim (Apply_view [
+      Vreshape [|2; 3; 2; 4|];
+      Vtranspose [|0; 2; 1; 3|];
+    ]) [const input] in
+  Ast.Eval.reset_stats ();
+  let result = Ast.Eval.eval [] expression in
+  Alcotest.(check (array int)) "head shape" [|2; 2; 3; 4|]
+    result.Tensor.view.Ndview.shape;
+  Alcotest.(check int) "split and transpose stay a view" 0
+    Ast.Eval.stats.materializations;
+  check_values "head order"
+    [|0.; 1.; 2.; 3.; 8.; 9.; 10.; 11.; 16.; 17.; 18.; 19.;
+      4.; 5.; 6.; 7.; 12.; 13.; 14.; 15.; 20.; 21.; 22.; 23.;
+      24.; 25.; 26.; 27.; 32.; 33.; 34.; 35.; 40.; 41.; 42.; 43.;
+      28.; 29.; 30.; 31.; 36.; 37.; 38.; 39.; 44.; 45.; 46.; 47.|]
+    result
+
 let test_fuse_views_stops_at_scan_boundary () =
   let nested =
     prim (Apply_view [Vslice [|(0, 2, 1)|]])
@@ -381,6 +402,8 @@ let () =
         test_expand_rank_inside_body;
       Alcotest.test_case "cumulative sum and product" `Quick
         test_cumulative_sum_and_product;
+      Alcotest.test_case "attention head split remains a view" `Quick
+        test_attention_head_split_view;
       Alcotest.test_case "fuse views stops at boundary" `Quick
         test_fuse_views_stops_at_scan_boundary;
     ];

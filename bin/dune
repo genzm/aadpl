@@ -12,3 +12,8 @@
  (name diffusion)
  (public_name lang-diffusion)
  (libraries view ast transform prng unix))
+
+(executable
+ (name transformer)
+ (public_name lang-transformer)
+ (libraries view ast transform prng unix))
