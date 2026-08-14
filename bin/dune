@@ -7,3 +7,8 @@
  (name vae)
  (public_name lang-vae)
  (libraries view ast transform prng unix))
+
+(executable
+ (name diffusion)
+ (public_name lang-diffusion)
+ (libraries view ast transform prng unix))

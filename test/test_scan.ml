@@ -247,7 +247,7 @@ let test_scan_inner_product () =
     ("z0", z0); ("coefficients", coefficients);
     (Transform.Forward.tangent_name "z0", z0_tangent);
     (Transform.Forward.tangent_name "coefficients", coefficient_tangent);
-    ("%scan.ct", cotangent);
+    ("%ct", cotangent);
   ] in
   Transform.Forward.reset_gensym ();
   let unzipped = Transform.Forward.forward expression
@@ -269,7 +269,7 @@ let test_scan_inner_product () =
     ~primal_bindings:unzipped.primal_bindings
     ~tangent_bindings:unzipped.tangent_bindings
     ~tangent_out:unzipped.tangent_out ~seeds ~input_shapes:shapes
-    ~cotangent_var:"%scan.ct" in
+    ~cotangent_var:"%ct" in
   let gradient seed =
     Transform.Forward.wrap_bindings
       (unzipped.primal_bindings @ transposed.grad_bindings)

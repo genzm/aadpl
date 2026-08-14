@@ -14,3 +14,4 @@ _opam/
 .DS_Store
 data/
 vae-output/
+diffusion-output/

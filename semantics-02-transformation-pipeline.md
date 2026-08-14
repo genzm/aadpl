@@ -345,13 +345,20 @@ build_elbo と grad はループの前に一度だけ。
 | `%u.`$n$ | `Sites` | サイト $n$ の基底乱数（一様） |
 | `%tr.`$n$ | `Reparam` | サイト $n$ の trace 値 |
 | `%ct` | `Transpose` | 余接 |
-| tangent 名 | `Forward` | 接ベクトル |
-| `p`$k$ / `r`$k$ | `Forward.gensym` | 中間値・残差 |
+| `%ct.s`$k$ / `%ct.t`$k$ | `Transpose` | 余接の和・中間値 |
+| `%`$n$`.t` | `Forward` | 変数 $n$ の接ベクトル |
+| `%p`$k$ / `%r`$k$ | `Forward.gensym` | 中間値・残差 |
+| `%scan.p.`$k$ / `%scan.x.`$k$ | `Forward` | Scan の primal carry / input |
+| `%scan.pre.`$k$ / `%scan.r.`$k$ | `Forward` | 更新前 carry / residual 軌跡 |
+| `%ct.scan.bar.`$k$ / `%ct.scan.out.`$k$ | `Transpose` | 逆向き Scan の carry 随伴 / 出力余接 |
+| `%ct.scan.shared.`$k$ / `%ct.scan.input.`$k$ | `Transpose` | 共有変数の累積随伴 / input 随伴 |
 | `m.` / `g.` + `a.`… | `Assess_expr` | model / guide の密度中間値 |
 
 $\Inv$: **ユーザ由来の変数名はこの領域に入らない。** 現在これは検査されていない（§7）。表層構文を作る時点で、`%` で始まる識別子を字句レベルで禁じるのが最も安い。
 
 `%u.` と `%tr.` の対応は `Sites.noise_name_of_name` / `trace_name_of_name` の**二関数が唯一の定義点**であり、文字列連結を他所に書かない。
+
+`Step` / `Argmax` 等による離散選択を body に持つ生成用 Scan は、値の生成専用とし `grad` の対象にしない。現行 AD はこれらの接ベクトルを零として扱うため、違反を静的には拒否しない。この規約を破るとエラーではなく零勾配になり得る。
 
 ### 4.2 乱数の名前空間
 
@@ -372,6 +379,9 @@ $$\texttt{key} = (\text{名前空間},\ \texttt{run\_key}), \qquad \texttt{ctr} 
 | 0 | 1 | MNIST シャッフル |
 | 1 | 1 | MNIST 動的二値化 |
 | 2 | 1 | 合成データ（Phase 12 GLMM） |
+| 3–4 | 1 | Phase 14 spiral の位置・jitter |
+| 5–6 | 1 | Phase 14 diffusion の時刻・学習ノイズ |
+| 7–8 | 1 | Phase 14 diffusion の逆過程・初期ノイズ |
 | 16–31 | 1 | Phase 13 パラメトリックブートストラップ用に予約 |
 
 **`ns_model` と `ns_guide` を分けることが必須である。** 同一にすると、同じ `run_key`・同じ `site_id` に対して model の事前抽出と guide の基底乱数が**同一の一様乱数になる**。ELBO を回すだけなら model の乱数を引かないので無害だが、**SBC（事前から引く → データ生成 → 推論 → 順位の一様性）で順位が壊れる**。しかもバグではなく「相関」として出るため、原因特定が最悪の部類になる。
