@@ -115,8 +115,8 @@ let transpose
       ()
     | Prim (_, p, args) ->
       adjoint_prim p args ct
-    | Let _ | Rank _ ->
-      failwith "transpose: unexpected Let/Rank in tangent expression"
+    | Let _ | Rank _ | Scan _ ->
+      failwith "transpose: unexpected Let/Rank/Scan in tangent expression"
     | Sample _ -> failwith "transpose: Sample not supported"
     | Score _ -> failwith "transpose: Score not supported"
 

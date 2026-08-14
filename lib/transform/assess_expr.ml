@@ -29,6 +29,13 @@ let free_vars (e : expr) : string list =
     | Let (_, s, e1, e2) ->
         go bound e1;
         go (s :: bound) e2
+    | Scan (_, scan, continuation) ->
+        List.iter (fun (_, init, _) -> go bound init) scan.carries;
+        List.iter (fun (_, input) -> go bound input) scan.inputs;
+        let carry_names = List.map (fun (name, _, _) -> name) scan.carries in
+        let body_bound = List.map fst scan.inputs @ carry_names @ bound in
+        List.iter (fun (_, _, next) -> go body_bound next) scan.carries;
+        go (carry_names @ bound) continuation
     | Rank (_, _, _, args) -> List.iter (go bound) args
     | Sample (_, _, _, dist) -> go_dist bound dist
     | Score (_, expression) -> go bound expression
@@ -54,6 +61,11 @@ let assert_no_sample_in_args loc args =
     | Const _ | Var _ -> false
     | Prim (_, _, args) -> List.exists has_sample args
     | Let (_, _, e1, e2) -> has_sample e1 || has_sample e2
+    | Scan (_, scan, continuation) ->
+        List.exists (fun (_, init, next) ->
+          has_sample init || has_sample next) scan.carries
+        || List.exists (fun (_, input) -> has_sample input) scan.inputs
+        || has_sample continuation
     | Rank (_, _, _, args) -> List.exists has_sample args
   in
   if List.exists has_sample args then
@@ -81,6 +93,18 @@ let rec subst ~from ~(to_ : expr) (e : expr) : expr =
       let e1' = subst ~from ~to_ e1 in
       if s = from then Let (l, s, e1', e2)
       else Let (l, s, e1', subst ~from ~to_ e2)
+  | Scan (l, scan, continuation) ->
+      let carry_names = List.map (fun (name, _, _) -> name) scan.carries in
+      let body_names = List.map fst scan.inputs @ carry_names in
+      let carries = List.map (fun (name, init, next) ->
+        let init = subst ~from ~to_ init in
+        let next = if List.mem from body_names then next else subst ~from ~to_ next in
+        name, init, next) scan.carries in
+      let inputs = List.map (fun (name, input) ->
+        name, subst ~from ~to_ input) scan.inputs in
+      let continuation = if List.mem from carry_names then continuation
+        else subst ~from ~to_ continuation in
+      Scan (l, { scan with carries; inputs }, continuation)
   | Rank (l, k, p, args) -> Rank (l, k, p, List.map (subst ~from ~to_) args)
   | Sample (l, name, frame, dist) ->
       Sample (l, name, frame, subst_dist ~from ~to_ dist)
@@ -227,6 +251,9 @@ let assess_expr ?(ns = "a.") ?(preserve_shape = [||])
             lift senv value
         | Sample (loc, name, frame, dist) ->
             density_of senv loc name frame dist
+        | Scan (loc, _, _) ->
+            failwith (Printf.sprintf "assess_expr: Scan not supported at %s:%d"
+              loc.file loc.line)
         | Rank _ -> failwith "assess_expr: Rank must be expanded first"
       and go_bind senv e =
         match e with
@@ -259,6 +286,7 @@ let assess_expr ?(ns = "a.") ?(preserve_shape = [||])
             Prim (l, p, List.map (rewrite senv) args)
         | Sample (_, name, _, _) -> List.assoc name slots
         | Score _ -> mk_scalar 0.0
+        | Scan _ -> failwith "assess_expr: Scan"
         | Rank _ -> failwith "assess_expr: Rank"
       in
       go env_shapes e)

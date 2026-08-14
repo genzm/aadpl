@@ -10,6 +10,7 @@ let rec fuse_views (e : expr) : expr =
   | Const _ | Var _ -> e
   | Let (loc, s, e1, e2) ->
     Let (loc, s, fuse_views e1, fuse_views e2)
+  | Scan _ -> e
   | Rank _ -> failwith "fuse_views: Rank must be expanded first"
   | Sample _ -> failwith "fuse_views: Sample not supported"
   | Score _ -> failwith "fuse_views: Score not supported"
@@ -39,6 +40,11 @@ let rec is_desugared (e : expr) : bool =
   match e with
   | Const _ | Var _ -> true
   | Let (_, _, e1, e2) -> is_desugared e1 && is_desugared e2
+  | Scan (_, scan, continuation) ->
+    List.for_all (fun (_, init, next) ->
+      is_desugared init && is_desugared next) scan.carries
+    && List.for_all (fun (_, input) -> is_desugared input) scan.inputs
+    && is_desugared continuation
   | Prim (_, _, args) -> List.for_all is_desugared args
   | Rank _ -> false
   | Sample _ -> true

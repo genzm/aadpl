@@ -53,9 +53,18 @@ type expr =
   | Var    of loc * string
   | Prim   of loc * prim * expr list
   | Let    of loc * string * expr * expr
+  | Scan   of loc * scan * expr
   | Rank   of loc * int * prim * expr list
   | Sample of loc * string * int array * dist
   | Score  of loc * expr
+
+and scan = {
+  steps : int;
+  carries : (string * expr * expr) list; (* name, init, simultaneous next *)
+  inputs : (string * expr) list;         (* name, sequence [steps; ...] *)
+  collect : bool;
+  reverse : bool;
+}
 
 and value = View.Tensor.t   (* future: variant with dtype *)
 
@@ -72,7 +81,7 @@ and dist =
 
 let loc_of = function
   | Const (l, _) | Var (l, _) | Prim (l, _, _) | Let (l, _, _, _)
-  | Rank (l, _, _, _) | Sample (l, _, _, _) | Score (l, _) -> l
+  | Scan (l, _, _) | Rank (l, _, _, _) | Sample (l, _, _, _) | Score (l, _) -> l
 
 (* --- constructors with dummy_loc for tests --- *)
 
@@ -80,6 +89,8 @@ let const v       = Const (dummy_loc, v)
 let var s         = Var (dummy_loc, s)
 let prim p args   = Prim (dummy_loc, p, args)
 let let_ s e body = Let (dummy_loc, s, e, body)
+let scan ~steps ~carries ~inputs ~collect ~reverse continuation =
+  Scan (dummy_loc, { steps; carries; inputs; collect; reverse }, continuation)
 let rank k p args  = Rank (dummy_loc, k, p, args)
 let sample name frame dist = Sample (dummy_loc, name, frame, dist)
 let score e = Score (dummy_loc, e)
@@ -196,6 +207,20 @@ and pp fmt = function
       (Format.pp_print_list ~pp_sep:Format.pp_print_space pp) args
   | Let (_, s, e, body) ->
     Format.fprintf fmt "(let %s = %a in@;<1 2>%a)" s pp e pp body
+  | Scan (_, scan, continuation) ->
+    let pp_carry fmt (name, init, next) =
+      Format.fprintf fmt "%s=%a->%a" name pp init pp next in
+    let pp_input fmt (name, input) =
+      Format.fprintf fmt "%s=%a" name pp input in
+    Format.fprintf fmt
+      "(scan steps=%d collect=%b reverse=%b carries=[%a] inputs=[%a] in@;<1 2>%a)"
+      scan.steps scan.collect scan.reverse
+      (Format.pp_print_list
+         ~pp_sep:(fun fmt () -> Format.fprintf fmt "; ") pp_carry)
+      scan.carries
+      (Format.pp_print_list
+         ~pp_sep:(fun fmt () -> Format.fprintf fmt "; ") pp_input)
+      scan.inputs pp continuation
   | Rank (_, k, p, args) ->
     Format.fprintf fmt "(%a⎉%d %a)" pp_prim p k
       (Format.pp_print_list ~pp_sep:Format.pp_print_space pp) args
@@ -220,6 +245,10 @@ let check_sites expr =
     | Const _ | Var _ -> ()
     | Prim (_, _, args) -> List.iter walk args
     | Let (_, _, e, body) -> walk e; walk body
+    | Scan (_, scan, continuation) ->
+      List.iter (fun (_, init, next) -> walk init; walk next) scan.carries;
+      List.iter (fun (_, input) -> walk input) scan.inputs;
+      walk continuation
     | Rank (_, _, _, args) -> List.iter walk args
   and walk_dist = function
     | D_uniform -> ()

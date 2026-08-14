@@ -119,6 +119,7 @@ let assess (env : Eval.env) (e : Types.expr)
     | Let (_, s, e1, e2) ->
       let v1 = go env e1 in
       go ((s, v1) :: env) e2
+    | Scan _ -> Eval.eval env e
     | Prim (loc, p, args) ->
       let vs = List.map (go env) args in
       Eval.validate loc p vs;

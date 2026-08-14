@@ -74,6 +74,14 @@ let rec prefix_sample_frames node_count = function
   | Let (loc, name, rhs, body) ->
       Let (loc, name, prefix_sample_frames node_count rhs,
         prefix_sample_frames node_count body)
+  | Scan (loc, scan, continuation) ->
+      let carries = List.map (fun (name, init, next) ->
+        name, prefix_sample_frames node_count init,
+        prefix_sample_frames node_count next) scan.carries in
+      let inputs = List.map (fun (name, input) ->
+        name, prefix_sample_frames node_count input) scan.inputs in
+      Scan (loc, { scan with carries; inputs },
+        prefix_sample_frames node_count continuation)
   | Rank (loc, rank, primitive, arguments) ->
       Rank (loc, rank, primitive,
         List.map (prefix_sample_frames node_count) arguments)

@@ -61,6 +61,11 @@ let rec has_prim_p pred (e : expr) : bool =
   | Const _ | Var _ -> false
   | Prim (_, p, args) -> pred p || List.exists (has_prim_p pred) args
   | Let (_, _, e1, e2) -> has_prim_p pred e1 || has_prim_p pred e2
+  | Scan (_, scan, continuation) ->
+    List.exists (fun (_, init, next) ->
+      has_prim_p pred init || has_prim_p pred next) scan.carries
+    || List.exists (fun (_, input) -> has_prim_p pred input) scan.inputs
+    || has_prim_p pred continuation
   | Rank _ -> false
   | Sample _ -> false
   | Score _ -> false

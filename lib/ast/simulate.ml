@@ -123,7 +123,7 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
                 List.fold_left (go bound) variables args
             | Let (_, name, rhs, body) ->
                 go (name :: bound) (go bound variables rhs) body
-            | Sample _ | Score _ -> variables
+            | Scan _ | Sample _ | Score _ -> variables
           in
           go [] [] expression
         in
@@ -138,7 +138,7 @@ let rec sample_dist ~key ~site_id ~component ~frame (dist : Types.dist)
           | Var _ as e -> e
           | Prim (l, p, args) -> Prim (l, p, List.map lift_consts args)
           | Let (l, s, e1, e2) -> Let (l, s, lift_consts e1, lift_consts e2)
-          | Rank _ | Sample _ | Score _ ->
+          | Scan _ | Rank _ | Sample _ | Score _ ->
               failwith "batch fwd: non-elementwise construct"
         in
         Eval.eval env' (lift_consts fwd)
@@ -172,6 +172,7 @@ let simulate ?sites ?(namespace = Prng.Threefry.ns_model) ~run_key
     | Let (_, s, e1, e2) ->
         let v1 = go env e1 in
         go ((s, v1) :: env) e2
+    | Scan _ -> Eval.eval env e
     | Prim (loc, p, args) ->
         let vs = List.map (go env) args in
         Eval.validate loc p vs;

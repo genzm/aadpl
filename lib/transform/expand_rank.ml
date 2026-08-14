@@ -73,6 +73,8 @@ let shift_prim (frame : int array) (p : prim) : prim =
 
 type shape_env = (string * int array) list
 
+exception Expand_error of loc * string
+
 let rec infer_shape (senv : shape_env) (e : expr) : int array =
   match e with
   | Const (_, v) -> v.View.Tensor.view.View.Ndview.shape
@@ -86,6 +88,27 @@ let rec infer_shape (senv : shape_env) (e : expr) : int array =
   | Let (_, s, e1, body) ->
     let sh1 = infer_shape senv e1 in
     infer_shape ((s, sh1) :: senv) body
+  | Scan (loc, scan, continuation) ->
+    if scan.steps <= 0 then
+      raise (Expand_error (loc, "Scan steps must be positive"));
+    let carry_shapes = List.map (fun (name, init, _) ->
+      name, infer_shape senv init) scan.carries in
+    let input_shapes = List.map (fun (name, input) ->
+      let shape = infer_shape senv input in
+      if Array.length shape = 0 || shape.(0) <> scan.steps then
+        raise (Expand_error (loc,
+          Printf.sprintf "Scan input '%s' must have leading axis %d"
+            name scan.steps));
+      name, Array.sub shape 1 (Array.length shape - 1)) scan.inputs in
+    let body_senv = input_shapes @ carry_shapes @ senv in
+    List.iter (fun (name, _, next) ->
+      if infer_shape body_senv next <> List.assoc name carry_shapes then
+        raise (Expand_error (loc,
+          Printf.sprintf "Scan carry '%s' changed shape" name))) scan.carries;
+    let output_shapes = List.map (fun (name, shape) ->
+      name, if scan.collect then Array.append [|scan.steps|] shape else shape)
+      carry_shapes in
+    infer_shape (output_shapes @ senv) continuation
   | Rank _ ->
     failwith "infer_shape: nested Rank not supported (expand inner Rank first)"
   | Sample (_, _, frame, _) -> frame
@@ -128,8 +151,6 @@ and output_shape (p : prim) (shapes : int array list) : int array =
 
 (* --- expand --- *)
 
-exception Expand_error of loc * string
-
 let expand ?(senv : shape_env = []) (e : expr) : expr =
   let rec go_dist senv = function
     | D_uniform -> D_uniform
@@ -147,6 +168,34 @@ let expand ?(senv : shape_env = []) (e : expr) : expr =
       let e1' = go senv e1 in
       let sh1 = infer_shape senv e1' in
       Let (loc, s, e1', go ((s, sh1) :: senv) e2)
+    | Scan (loc, scan, continuation) ->
+      if scan.steps <= 0 then
+        raise (Expand_error (loc, "Scan steps must be positive"));
+      let carries = List.map (fun (name, init, next) ->
+        name, go senv init, next) scan.carries in
+      let inputs = List.map (fun (name, input) -> name, go senv input)
+          scan.inputs in
+      let carry_shapes = List.map (fun (name, init, _) ->
+        name, infer_shape senv init) carries in
+      let input_shapes = List.map (fun (name, input) ->
+        let shape = infer_shape senv input in
+        if Array.length shape = 0 || shape.(0) <> scan.steps then
+          raise (Expand_error (loc,
+            Printf.sprintf "Scan input '%s' must have leading axis %d"
+              name scan.steps));
+        name, Array.sub shape 1 (Array.length shape - 1)) inputs in
+      let body_senv = input_shapes @ carry_shapes @ senv in
+      let carries = List.map (fun (name, init, next) ->
+        let next = go body_senv next in
+        if infer_shape body_senv next <> List.assoc name carry_shapes then
+          raise (Expand_error (loc_of next,
+            Printf.sprintf "Scan carry '%s' changed shape" name));
+        name, init, next) carries in
+      let output_shapes = List.map (fun (name, shape) ->
+        name, if scan.collect then Array.append [|scan.steps|] shape else shape)
+        carry_shapes in
+      let continuation = go (output_shapes @ senv) continuation in
+      Scan (loc, { scan with carries; inputs }, continuation)
     | Prim (loc, p, args) ->
       Prim (loc, p, List.map (go senv) args)
     | Sample (l, name, frame, dist) ->
@@ -199,6 +248,11 @@ let rec is_expanded (e : expr) : bool =
   match e with
   | Const _ | Var _ -> true
   | Let (_, _, e1, e2) -> is_expanded e1 && is_expanded e2
+  | Scan (_, scan, continuation) ->
+    List.for_all (fun (_, init, next) ->
+      is_expanded init && is_expanded next) scan.carries
+    && List.for_all (fun (_, input) -> is_expanded input) scan.inputs
+    && is_expanded continuation
   | Prim (_, _, args) -> List.for_all is_expanded args
   | Rank _ -> false
   | Sample _ -> true

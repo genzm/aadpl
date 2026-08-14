@@ -40,6 +40,8 @@ let check_no_samples (e : expr) =
     | Let (_, _, e1, e2) ->
         walk e1;
         walk e2
+    | Scan (l, _, _) ->
+        raise (Grad_error (l, "Scan is not differentiable yet"))
     | Rank (_, _, _, args) -> List.iter walk args
   in
   walk e
@@ -157,6 +159,8 @@ let grad ~(param_shapes : (string * int array) list)
     | Prim (l, p, args) -> Prim (l, p, List.map subst_data_tangents args)
     | Let (l, s, e1, e2) ->
         Let (l, s, subst_data_tangents e1, subst_data_tangents e2)
+    | Scan _ ->
+        failwith "grad: Scan reached data tangent substitution"
     | Rank _ ->
         failwith "grad: Rank remained after expand while zeroing data tangents"
     | Sample _ | Score _ -> e

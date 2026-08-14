@@ -27,6 +27,7 @@ let rec free_vars (e : expr) : SS.t =
     List.fold_left (fun acc a -> SS.union acc (free_vars a)) SS.empty args
   | Let (_, s, e1, e2) ->
     SS.union (free_vars e1) (SS.remove s (free_vars e2))
+  | Scan _ -> failwith "free_vars: Scan must be handled at its boundary"
   | Rank _ -> failwith "free_vars: Rank in forward output (expand first)"
   | Sample _ -> failwith "free_vars: Sample not supported"
   | Score _ -> failwith "free_vars: Score not supported"
@@ -63,6 +64,7 @@ let check_linearity (tangent_bs : (string * expr) list) (deps : SS.t)
     | Const _ | Var _ -> None
     | Let (_, _, e1, e2) ->
       (match check_expr e1 with Some m -> Some m | None -> check_expr e2)
+    | Scan _ -> Some "Scan in tangent bindings"
     | Rank _ -> Some "Rank in tangent bindings"
     | Sample _ -> Some "Sample in tangent bindings"
     | Score _ -> Some "Score in tangent bindings"

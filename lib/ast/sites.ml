@@ -76,6 +76,10 @@ let collect_sites (e : expr) : site list =
     | Let (_, _, e1, e2) ->
         walk e1;
         walk e2
+    | Scan (_, scan, continuation) ->
+        List.iter (fun (_, init, next) -> walk init; walk next) scan.carries;
+        List.iter (fun (_, input) -> walk input) scan.inputs;
+        walk continuation
   and walk_dist = function
     | D_uniform -> ()
     | D_categorical weights -> walk weights

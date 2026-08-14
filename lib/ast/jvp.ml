@@ -40,6 +40,8 @@ let rec jvp_eval (env : dual_env) (e : Types.expr) : dual =
   | Let (_, s, e1, e2) ->
     let d1 = jvp_eval env e1 in
     jvp_eval ((s, d1) :: env) e2
+  | Scan (loc, _, _) ->
+    raise (Eval.Eval_error (loc, "Scan is not differentiable in jvp_eval yet"))
   | Rank (loc, _, _, _) ->
     raise (Eval.Eval_error (loc, "Rank node must be expanded before jvp_eval"))
   | Sample (loc, _, _, _) ->

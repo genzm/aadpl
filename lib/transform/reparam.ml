@@ -27,6 +27,7 @@ let rec wrap_rank0 (e : expr) : expr =
   | Const _ | Var _ -> e
   | Prim (l, p, args) -> Rank (l, 0, p, List.map wrap_rank0 args)
   | Let (l, s, e1, e2) -> Let (l, s, wrap_rank0 e1, wrap_rank0 e2)
+  | Scan _ -> failwith "wrap_rank0: non-elementwise Scan in fwd"
   | Rank (l, 0, p, args) -> Rank (l, 0, p, List.map wrap_rank0 args)
   | Rank _ -> failwith "wrap_rank0: non-elementwise Rank in fwd"
   | Sample _ | Score _ ->
@@ -42,6 +43,7 @@ let rec subst_var ~from ~to_ (e : expr) : expr =
       let e1' = subst_var ~from ~to_ e1 in
       if s = from then Let (l, s, e1', e2) (* shadowed *)
       else Let (l, s, e1', subst_var ~from ~to_ e2)
+  | Scan _ -> failwith "subst_var: unexpected Scan in distribution fwd"
   | Rank (l, k, p, args) -> Rank (l, k, p, List.map (subst_var ~from ~to_) args)
   | Sample _ | Score _ -> failwith "subst_var: unexpected Sample/Score in fwd"
 
@@ -76,6 +78,11 @@ let reparam ?sites (e : expr) : expr =
     | Const _ | Var _ -> e
     | Prim (l, p, args) -> Prim (l, p, List.map go args)
     | Let (l, s, e1, e2) -> Let (l, s, go e1, go e2)
+    | Scan (l, scan, continuation) ->
+        let carries = List.map (fun (name, init, next) ->
+          name, go init, go next) scan.carries in
+        let inputs = List.map (fun (name, input) -> name, go input) scan.inputs in
+        Scan (l, { scan with carries; inputs }, go continuation)
     | Rank (l, k, p, args) -> Rank (l, k, p, List.map go args)
     | Score (l, e) -> Score (l, go e)
     | Sample (l, name, frame, dist) -> (
@@ -124,6 +131,8 @@ let elim_samples ~(sites : Ast.Sites.site list) (e : expr) :
           match r1 with Var (_, s') when s = s' -> [] | _ -> [ (s, r1) ]
         in
         (bs1 @ binding @ bs2, r2)
+    | Scan (loc, _, _) ->
+        raise (Elim_error (loc, "Scan is not supported by elim_samples"))
     | Prim (l, p, args) ->
         let bindings, args' = go_list args in
         (bindings, Prim (l, p, args'))
@@ -152,6 +161,11 @@ let rec is_reparammed (e : expr) : bool =
   | Const _ | Var _ -> true
   | Prim (_, _, args) -> List.for_all is_reparammed args
   | Let (_, _, e1, e2) -> is_reparammed e1 && is_reparammed e2
+  | Scan (_, scan, continuation) ->
+      List.for_all (fun (_, init, next) ->
+        is_reparammed init && is_reparammed next) scan.carries
+      && List.for_all (fun (_, input) -> is_reparammed input) scan.inputs
+      && is_reparammed continuation
   | Rank (_, _, _, args) -> List.for_all is_reparammed args
   | Score (_, e) -> is_reparammed e
   | Sample (_, _, _, dist) -> dist_is_primitive dist
@@ -187,6 +201,10 @@ let check_guide (e : expr) : unit =
     | Let (_, _, e1, e2) ->
         walk e1;
         walk e2
+    | Scan (_, scan, continuation) ->
+        List.iter (fun (_, init, next) -> walk init; walk next) scan.carries;
+        List.iter (fun (_, input) -> walk input) scan.inputs;
+        walk continuation
     | Score (loc, _) ->
         raise (Guide_error (loc, "guide must not contain Score"))
     | Sample (loc, name, _, dist) -> check_dist loc name dist

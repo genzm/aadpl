@@ -393,6 +393,8 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
   | Let (_, s, e1, e2) ->
     let v1 = eval env e1 in
     eval ((s, v1) :: env) e2
+  | Scan (loc, scan, continuation) ->
+    eval_scan env loc scan continuation
   | Rank (loc, _, _, _) ->
     raise (Eval_error (loc, "Rank node must be expanded before eval"))
   | Sample (loc, _, _, _) ->
@@ -561,6 +563,96 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
           done;
           Tensor.of_buf dst (Ndview.contiguous os)
         | _ -> raise (Eval_error (loc, "wrong number of arguments")))))
+
+and eval_scan (env : env) (loc : Types.loc) (scan : Types.scan)
+    (continuation : Types.expr) : Types.value =
+  let fail at message = raise (Eval_error (at, message)) in
+  if scan.steps <= 0 then fail loc "Scan steps must be positive";
+  let names =
+    List.map (fun (name, _, _) -> name) scan.carries
+    @ List.map fst scan.inputs in
+  if List.length names <> List.length (List.sort_uniq String.compare names) then
+    fail loc "Scan carry and input names must be unique";
+  let rec reject_effects (expression : Types.expr) = match expression with
+    | Sample (at, _, _, _) -> fail at "Scan body must not contain Sample"
+    | Score (at, _) -> fail at "Scan body must not contain Score"
+    | Const _ | Var _ -> ()
+    | Prim (_, _, args) | Rank (_, _, _, args) ->
+      List.iter reject_effects args
+    | Let (_, _, rhs, body) ->
+      reject_effects rhs;
+      reject_effects body
+    | Scan (_, nested, body) ->
+      List.iter
+        (fun (_, init, next) -> reject_effects init; reject_effects next)
+        nested.carries;
+      List.iter (fun (_, input) -> reject_effects input) nested.inputs;
+      reject_effects body
+  in
+  List.iter (fun (_, _, next) -> reject_effects next) scan.carries;
+  let inputs = List.map (fun (name, expression) -> name, eval env expression)
+      scan.inputs in
+  List.iter (fun (name, value) ->
+    let shape = shape_of value in
+    if Array.length shape = 0 || shape.(0) <> scan.steps then
+      fail loc
+        (Printf.sprintf "Scan input '%s' must have leading axis %d"
+           name scan.steps)) inputs;
+  let carry_values =
+    List.map (fun (name, init, _) -> name, eval env init) scan.carries in
+  let carry_shapes = List.map (fun (name, value) -> name, shape_of value)
+      carry_values in
+  let cell_at (sequence : Tensor.t) index =
+    let shape = shape_of sequence in
+    let rank = Array.length shape in
+    let ranges = Array.init rank (fun axis ->
+      if axis = 0 then (index, index + 1, 1)
+      else (0, shape.(axis), 1)) in
+    let cell_shape = Array.sub shape 1 (rank - 1) in
+    let sliced = Tensor.slice sequence ~ranges in
+    match Tensor.reshape sliced ~shape:cell_shape with
+    | Some cell -> cell
+    | None ->
+      record_materialize ();
+      let count = Array.fold_left ( * ) 1 cell_shape in
+      let buffer = Buf.create count in
+      record_alloc count;
+      Tensor.read_view ~src:sliced.buf ~view:sliced.view ~dst:buffer;
+      Tensor.of_buf buffer (Ndview.contiguous cell_shape)
+  in
+  let trajectories =
+    if scan.collect then
+      List.map (fun (name, shape) ->
+        let trajectory = Tensor.make (Array.append [|scan.steps|] shape) in
+        record_alloc (scan.steps * Array.fold_left ( * ) 1 shape);
+        name, trajectory) carry_shapes
+    else [] in
+  let write_cell destination step source =
+    let cell_count = Ndview.numel source.Tensor.view in
+    Ndview.iter_indices source.view.shape (fun linear index ->
+      Buf.set destination.Tensor.buf (step * cell_count + linear)
+        (Buf.get source.buf (Ndview.index_of source.view index)))
+  in
+  let carries = ref carry_values in
+  for step = 0 to scan.steps - 1 do
+    let input_index = if scan.reverse then scan.steps - 1 - step else step in
+    let step_inputs = List.map (fun (name, sequence) ->
+      name, cell_at sequence input_index) inputs in
+    let step_env = step_inputs @ !carries @ env in
+    let next_values = List.map (fun (name, _, next) ->
+      let value = eval step_env next in
+      let expected = List.assoc name carry_shapes in
+      if shape_of value <> expected then
+        fail (Types.loc_of next)
+          (Printf.sprintf "Scan carry '%s' changed shape" name);
+      name, value) scan.carries in
+    if scan.collect then
+      List.iter (fun (name, value) ->
+        write_cell (List.assoc name trajectories) step value) next_values;
+    carries := next_values
+  done;
+  let outputs = if scan.collect then trajectories else !carries in
+  eval (outputs @ env) continuation
 
 (* Evaluate loss + grads with shared primal computation.
    primal_bindings are evaluated once; loss_body and each grad_body

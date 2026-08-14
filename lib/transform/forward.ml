@@ -62,6 +62,7 @@ let rec forward (e : expr) : bindings * expr * expr =
       let bs2, p2, t2 = forward e2 in
       (* bindings: bs1, then bind s=p1 and %s.t=t1, then bs2 *)
       (bs1 @ [ (s, p1); (ts, t1) ] @ bs2, p2, t2)
+  | Scan _ -> failwith "forward: Scan not supported yet"
   | Rank (loc, _, _, _) ->
       raise (Ast.Eval.Eval_error (loc, "Rank must be expanded before forward"))
   | Sample _ -> failwith "forward: Sample not supported"
