@@ -211,7 +211,7 @@ let validate loc (p : Types.prim) (args : Tensor.t list) =
       if not (Sites.support_contains support value) then
         raise (Eval_error (loc, "value outside declared support"))
     )
-  | (Types.Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv), [_] -> ()
+  | (Types.Neg | Exp | Log | Logsigmoid | Sqrt | Relu | Step | Erf | Erfinv | Stop_gradient), [_] -> ()
   | (Types.Add | Sub | Mul | Div | Max2 | Mask), [x; y] ->
     assert_shape loc "map2: shape mismatch" (shape_of x = shape_of y)
   | Sum_axis axis, [x] ->
@@ -329,6 +329,7 @@ let map1_f = function
   | Step -> fun x -> if x > 0.0 then 1.0 else 0.0
   | Erf -> erf_impl
   | Erfinv -> erfinv_impl
+  | Stop_gradient -> fun x -> x
   | _ -> assert false
 
 let map2_f = function
@@ -345,7 +346,7 @@ let map2_f = function
 let alloc_shape (p : Types.prim) (args : Tensor.t list) : int array =
   match p, args with
   | (Types.Neg | Exp | Log | Logsigmoid | Log_unit_density | Log_support_density _
-    | Sqrt | Relu | Step | Erf | Erfinv), [x] -> shape_of x
+    | Sqrt | Relu | Step | Erf | Erfinv | Stop_gradient), [x] -> shape_of x
   | (Types.Add | Sub | Mul | Div | Max2 | Mask), [x; _] -> shape_of x
   | (Sum_axis axis | Max_axis axis | Argmax_axis axis), [x] ->
     let s = shape_of x in
@@ -439,7 +440,7 @@ let rec eval (env : env) (e : Types.expr) : Types.value =
        record_kernel pname on (fun () ->
        (match p, vs with
         | (Neg | Exp | Log | Logsigmoid | Log_unit_density | Log_support_density _
-          | Sqrt | Relu | Step | Erf | Erfinv), [x] ->
+          | Sqrt | Relu | Step | Erf | Erfinv | Stop_gradient), [x] ->
           Kernel.Naive.map1 ~f:(map1_f p) ~src:x.buf ~view:x.view ~dst;
           Tensor.of_buf dst (Ndview.contiguous os)
         | (Add | Sub | Mul | Div | Max2 | Mask), [x; y] ->

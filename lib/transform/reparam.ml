@@ -218,15 +218,46 @@ exception Trace_mismatch of string
 
 exception Support_mismatch of loc * string
 
-let check_support_compat ~model_sites ~guide_sites =
+(* Resolve a categorical's category count from the shape of its weights, for
+   Ast.Sites.dist_support.  Returning None means "not statically known here" --
+   for instance weights bound by a Let inside the model, whose name is not in
+   env_shapes -- which leaves dist_support to refuse rather than guess. *)
+let categorical_size (env_shapes : (string * int array) list) (weights : expr) =
+  match Expand_rank.infer_shape env_shapes weights with
+  | shape when Array.length shape > 0 -> Some shape.(Array.length shape - 1)
+  | _ -> None
+  | exception Failure _ -> None
+  | exception Expand_rank.Expand_error _ -> None
+
+(* Shapes of the names a program binds along its Let spine, so that a
+   distribution whose parameters were computed in a Let -- a proposal whose
+   later factor is conditioned on an earlier draw -- can still be sized. *)
+let rec local_shapes (senv : (string * int array) list) (e : expr) =
+  match e with
+  | Let (_, name, rhs, body) ->
+      local_shapes ((name, Expand_rank.infer_shape senv rhs) :: senv) body
+  | Const _ | Var _ | Prim _ | Rank _ | Sample _ | Score _ | Scan _ -> senv
+
+(* Model and guide get separate resolvers: they may bind the same local name to
+   differently shaped values, and picking the wrong one would silently size a
+   support. *)
+let check_support_compat ?(model_categorical_size = fun _ -> None)
+    ?(guide_categorical_size = fun _ -> None) ~model_sites ~guide_sites () =
+  let support ~categorical_size dist =
+    Ast.Sites.dist_support ~categorical_size dist
+  in
   List.iter
     (fun (guide_site : Ast.Sites.site) ->
       match List.find_opt (fun site ->
         site.Ast.Sites.name = guide_site.name) model_sites with
       | None -> ()
       | Some model_site ->
-          let guide_support = Ast.Sites.dist_support guide_site.dist in
-          let model_support = Ast.Sites.dist_support model_site.dist in
+          let guide_support =
+            support ~categorical_size:guide_categorical_size guide_site.dist
+          in
+          let model_support =
+            support ~categorical_size:model_categorical_size model_site.dist
+          in
           if not (Ast.Sites.support_subset guide_support model_support) then
             raise
               (Support_mismatch

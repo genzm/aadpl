@@ -29,20 +29,61 @@ This is an **array language** with automatic differentiation and probabilistic p
 | `prng` | Threefry-2x64 counter-based PRNG. Counter encodes site_id, component (D_product tree), frame_index. |
 | `ast` | Core types + interpreters. `Types` (expr, prim, viewspec, dist), `Eval` (deterministic), `Jvp` (forward-mode AD), `Simulate` (probabilistic with Threefry sampling), `Sites` (static site enumeration), `Normal` (Gaussian via D_pushforward). |
 | `transform` | AST→AST passes (see pipeline below). |
-| `estimator` | Estimator IR: which statistical quantity is wanted (`Elbo`), separated from how it is estimated (`Lower_pathwise`). Depends on `transform`. |
+| `estimator` | Estimator IR: which statistical quantity is wanted (`Elbo`), separated from how it is estimated (`Lower_pathwise`, `Lower_enumerate`). `Strategy` classifies sites. Depends on `transform`. |
 
 ### Layering
 
 ```
-Model AST  --(Estimator.elbo)-->  Estimator IR  --(Estimator.lower_pathwise)-->  Tensor AST
-                                                                                     |
-                                                        Transform.grad: Forward → Unzip → Transpose
+Model AST  --(Estimator.elbo)-->  Estimator IR  --(lowering)-->  Tensor AST
+                                                                     |
+                                        Transform.grad: Forward → Unzip → Transpose
 ```
 
 `estimator` states the objective (`E_{z~q}[log p − log q]`); a lowering picks the estimator and
-produces an ordinary tensor program whose only stochastic inputs are the free noise variables
-`%u.<site>`. `transform` never depends on `estimator` — the dune library boundary enforces the
-direction.
+produces an ordinary tensor program. `transform` never depends on `estimator` — the dune library
+boundary enforces the direction.
+
+| Lowering | Applies to | Result |
+|---|---|---|
+| `lower_pathwise` | `D_pushforward` / `D_uniform` sites | noise lifted to free `%u.<site>` vars; `grad` with them in `~data_shapes` is the pathwise gradient |
+| `lower_enumerate` | scalar `D_categorical` sites | `noise = []`; sums `q(z)·f(z)` over the joint support, so `grad` gives the **exact** gradient of an expectation |
+| `lower_score` | any sampled site | draws `%tr.<site>` supplied by `Estimator.draw`; emits a surrogate whose value is `f` and whose gradient is the REINFORCE estimator |
+
+The surrogate is `f + Σᵢ stopgrad(mᵢ − b)·(log qᵢ − stopgrad(log qᵢ))`. Each bracket evaluates to zero, so
+the program still **reports the objective** while differentiating like the estimator; a bare
+`f + stopgrad(f)·log q` would differentiate correctly and then report a number nobody asked for.
+`Lower_score.options` sets `mᵢ`: `loss_to_go` attributes to site *i* only the cost drawn at or after it
+(valid because `E[c·∇log qᵢ | z_<ᵢ] = 0` for earlier `c`), and `baseline` subtracts a constant control variate.
+
+`lower_enumerate` is the golden reference for `lower_score`: on a finite support, `Σ_z q(z)·grad_score(z)`
+must equal `grad_enumerate` exactly, so unbiasedness is a **deterministic** test rather than a statistical
+one — and so is variance, which makes "loss-to-go reduces variance" a checkable claim rather than a hope.
+That is why enumeration was built first.
+
+`Expect` carries `log_density` (the proposal's own `log q`) alongside `body`, because an estimator that
+differentiates the *measure* needs it and one that differentiates the *path* does not. It also carries
+`supports`, resolved once by the objective — a categorical's size needs shape inference over the proposal,
+including its `Let`-bound locals (`Reparam.local_shapes`), which no lowering can redo on its own.
+
+`Decompose.split` recovers the additive terms `assess_expr` summed, hoisting its gensymmed `Let`s; that is
+what lets a score term drop the cost it cannot have influenced. A lowering that uses a sub-expression twice
+must `Rename.binders` one copy — `Unzip` requires every binding in a program to be unique.
+
+`Estimator.strategy` reports which lowering an objective admits, derived from the *constructors*
+of the distribution algebra (`Strategy.of_dist`) rather than from a per-distribution table — so
+Normal/LogNormal/HalfNormal are all covered by the one `D_pushforward → Pathwise` line. There is
+deliberately no `Auto`: the caller names the estimator.
+
+Preconditions follow the split. A discrete site is a valid *objective*; only `lower_pathwise`
+rejects it (via `Reparam.check_guide`). `Estimator.elbo` checks only what makes the proposal a
+distribution (no `Score`, distinct sites).
+
+A categorical's support size is the last axis of its weights. `ast` cannot call shape inference
+(that lives in `transform`), so `Ast.Sites.dist_support` takes an optional `?categorical_size`
+resolver; `Reparam.categorical_size env_shapes` supplies it from `infer_shape`, and `Ast.Assess`
+supplies it by evaluating the weights. Without a resolver the size stays unknown and
+`dist_support` refuses rather than guessing — so `Categorical(exp logits)` works, while weights
+bound by a `Let` inside the model (invisible to `env_shapes`) are still rejected.
 
 ### Transform pipeline
 
@@ -60,7 +101,9 @@ For probabilistic programs, the `estimator` layer additionally uses:
 
 ### Key type: `expr` (in `lib/ast/types.ml`)
 
-Seven node types: `Const | Var | Prim | Let | Rank | Sample | Score`. No control flow or recursion. `Rank(k, prim, args)` is the rank-polymorphism node — it specifies cell rank `k` and gets eliminated by `Expand_rank`.
+Eight node types: `Const | Var | Prim | Let | Scan | Rank | Sample | Score`. No control flow or recursion. `Rank(k, prim, args)` is the rank-polymorphism node — it specifies cell rank `k` and gets eliminated by `Expand_rank`. `Scan` is the bounded sequential axis (static `steps`).
+
+`Stop_gradient` is a `prim`: the identity on values, zero on tangents. `Forward` keeps the node in the primal, so differentiating twice keeps stopping rather than silently resuming. It is what lets a surrogate objective be written as ordinary array code.
 
 ### Leading-axis semantics
 

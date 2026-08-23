@@ -394,6 +394,35 @@ let test_shadowing_rejected () =
   in
   Alcotest.(check bool) "shadowing detected" true threw
 
+(* stop_gradient: the identity on values, zero on tangents.  f = stopgrad(x) * y
+   so that the two directions differ, and the product rule has to consult it. *)
+let test_stop_gradient_grad () =
+  let scalar v =
+    let t = Tensor.make [||] in
+    Buf.set t.buf 0 v;
+    t
+  in
+  let gp =
+    Transform.grad
+      ~param_shapes:[("x", [||]); ("y", [||])]
+      (prim Mul [prim Stop_gradient [var "x"]; var "y"])
+  in
+  let env = [("x", scalar 3.0); ("y", scalar 5.0)] in
+  let at e = Buf.get (Ast.Eval.eval env e).Tensor.buf 0 in
+  Alcotest.(check (float 1e-12)) "value is unchanged" 15.0 (at gp.Transform.loss);
+  Alcotest.(check (float 1e-12)) "d/dx is stopped" 0.0
+    (at (List.assoc "x" gp.Transform.grads));
+  Alcotest.(check (float 1e-12)) "d/dy sees the stopped value" 3.0
+    (at (List.assoc "y" gp.Transform.grads));
+  (* The node stays in the primal, so differentiating again keeps stopping
+     rather than silently resuming. *)
+  let printed = Format.asprintf "%a" Ast.Types.pp gp.Transform.loss in
+  let rec contains i =
+    i + 13 <= String.length printed
+    && (String.sub printed i 13 = "stop_gradient" || contains (i + 1))
+  in
+  Alcotest.(check bool) "stop_gradient survives differentiation" true (contains 0)
+
 let () =
   let open Alcotest in
   run "transpose" [
@@ -441,5 +470,9 @@ let () =
       test_case "transpose∘gather" `Quick test_transpose_gather;
       test_case "gather∘transpose" `Quick test_gather_transpose;
       test_case "shadowing rejected" `Quick test_shadowing_rejected;
+    ];
+    "stop_gradient", [
+      test_case "grad stops and the node survives" `Quick
+        test_stop_gradient_grad;
     ];
   ]

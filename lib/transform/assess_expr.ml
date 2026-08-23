@@ -200,9 +200,10 @@ let log_density_expr ~env_shapes ~loc frame dist x =
       let selected = prim (Select_axis axis) [weights; x] in
       let total = prim (Sum_axis axis) [weights] in
       let raw = prim Log [prim Div [selected; total]] in
+      (* [categories] came from the weights' shape just above, so this branch
+         never needs Ast.Sites to re-derive it from Const weights. *)
       Some (prim Add
-        [Prim (loc, Log_support_density (Ast.Sites.dist_support dist), [x]);
-         raw])
+        [Prim (loc, Log_support_density (S_finite categories), [x]); raw])
   | _ -> match log_density_raw loc dist x with
   | None -> None
   | Some raw ->

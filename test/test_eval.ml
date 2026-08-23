@@ -219,6 +219,15 @@ let test_matmul_assoc () =
       (get a_bx [|i;0|]) (get ab_x [|i;0|])
   done
 
+let test_stop_gradient_value () =
+  let a = tensor_of_list [|3|] [1.5; -2.0; 0.25] in
+  let r = eval_expr (prim Stop_gradient [const a]) in
+  for i = 0 to 2 do
+    Alcotest.(check (float 1e-12))
+      (Printf.sprintf "stop_gradient[%d]" i)
+      (Buf.get a.buf i) (Buf.get r.buf i)
+  done
+
 let () =
   let open Alcotest in
   run "eval" [
@@ -255,5 +264,8 @@ let () =
     ];
     "pp", [
       test_case "pretty-printer" `Quick test_pp;
+    ];
+    "stop_gradient", [
+      test_case "identity on values" `Quick test_stop_gradient_value;
     ];
   ]

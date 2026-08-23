@@ -292,6 +292,18 @@ let test_dense_jvp () =
     [("xs", xs); ("w", w_pert); ("bias", bias)] expanded in
   check_fd "dense_jvp" tangent primal_ref result_pert
 
+let test_stop_gradient_tangent () =
+  let x = tensor_of_list [|3|] [0.5; 1.5; -0.25] in
+  let dx = tensor_of_list [|3|] [1.0; 1.0; 1.0] in
+  let p, t =
+    Ast.Jvp.jvp_eval [("x", (x, dx))] (prim Stop_gradient [var "x"])
+  in
+  for i = 0 to 2 do
+    Alcotest.(check (float 1e-12)) "primal passes through"
+      (tensor_get x i) (tensor_get p i);
+    Alcotest.(check (float 1e-12)) "tangent is zero" 0.0 (tensor_get t i)
+  done
+
 let () =
   let open Alcotest in
   run "jvp" [
@@ -324,6 +336,9 @@ let () =
     ];
     "linalg", [
       test_case "matmul" `Quick test_matmul;
+    ];
+    "stop_gradient", [
+      test_case "zero tangent" `Quick test_stop_gradient_tangent;
     ];
     "composed", [
       test_case "exp then sum" `Quick test_composed_exp_sum;

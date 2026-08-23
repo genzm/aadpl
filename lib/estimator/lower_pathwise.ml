@@ -16,19 +16,21 @@
    Split out of the former Transform.build_elbo: the steps below are that
    function's second half, verbatim. *)
 
-type program = {
-  loss : Ast.Types.expr;
-  sites : Ast.Sites.site list;
-  noise : (string * int array) list;
-}
+let noise_env (program : Types.program) ~run_key =
+  Ast.Sites.draw_noise ~namespace:Prng.Threefry.ns_guide ~run_key
+    program.Types.sites
 
-let noise_env (program : program) ~run_key =
-  Ast.Sites.draw_noise ~namespace:Prng.Threefry.ns_guide ~run_key program.sites
-
-let lower (objective : Types.t) : program =
+let lower (objective : Types.t) : Types.program =
   match objective with
-  | Types.Deterministic loss -> { loss; sites = []; noise = [] }
-  | Types.Expect { sites; proposal; body; env_shapes } ->
+  | Types.Deterministic loss -> { Types.loss; sites = []; noise = [] }
+  | Types.Expect { sites; proposal; body; env_shapes; _ } ->
+      (* Every site must be reparameterizable.  This is a precondition of the
+         ESTIMATOR, not of the objective, which is why it is asked here and not
+         in Estimator.elbo: a discrete site is a perfectly good objective, it
+         just has to be lowered by enumeration instead.  Strategy.of_site says
+         the same thing in the vocabulary the other lowerings use; check_guide
+         is kept as the authority so the error text does not move. *)
+      Transform.Reparam.check_guide proposal;
       let noise =
         List.map
           (fun (site : Ast.Sites.site) ->
@@ -42,4 +44,4 @@ let lower (objective : Types.t) : program =
         |> Transform.Expand_rank.expand ~senv:(noise @ env_shapes)
         |> Transform.Desugar.fuse_views
       in
-      { loss; sites; noise }
+      { Types.loss; sites; noise }

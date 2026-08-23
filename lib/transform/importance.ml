@@ -19,7 +19,10 @@ let importance ~particles ~(slots : Ast.Sites.slot list) ~model ~guide
   let model_sites = Ast.Sites.collect_sites model
   and guide_sites = Ast.Sites.collect_sites guide in
   Reparam.check_trace_compat_sites ~slots ~model_sites ~guide_sites ();
-  Reparam.check_support_compat ~model_sites ~guide_sites;
+  Reparam.check_support_compat
+    ~model_categorical_size:(Reparam.categorical_size env_shapes)
+    ~guide_categorical_size:(Reparam.categorical_size env_shapes)
+    ~model_sites ~guide_sites ();
   let prefix expression =
     prim (Apply_view [Vbroadcast (0, particles)]) [expression] in
   let model = Quadrature.prefix_sample_frames particles model

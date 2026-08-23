@@ -129,7 +129,7 @@ let check_linearity (tangent_bs : binding list) (deps : SS.t)
       else check_args [a]
     (* nonlinear map1/map2 must not have tangent-dependent args *)
     | (Exp | Log | Logsigmoid | Log_unit_density | Log_support_density _
-      | Sqrt | Relu | Step | Erf | Erfinv), [a] ->
+      | Sqrt | Relu | Step | Erf | Erfinv | Stop_gradient), [a] ->
       if is_dep a then
         Some (Format.asprintf "%a: argument is tangent-dependent (nonlinear)"
                 pp_prim p)

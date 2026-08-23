@@ -47,6 +47,10 @@ type prim =
   | Adjoint_view of viewspec * int array (* σ_*: pushforward; int array = target shape *)
   (* linear algebra *)
   | Matmul
+  (* differentiation control: the identity on values, zero on tangents.
+     Kept in the primal by the forward pass so that repeated differentiation
+     keeps stopping, rather than only the first derivative. *)
+  | Stop_gradient
 
 type expr =
   | Const  of loc * value
@@ -192,6 +196,7 @@ let pp_prim fmt = function
     Format.fprintf fmt "adjoint_view(%a,[%a])" pp_viewspec spec
       pp_intlist (Array.to_list shape)
   | Matmul -> Format.fprintf fmt "matmul"
+  | Stop_gradient -> Format.fprintf fmt "stop_gradient"
 
 let rec pp_dist fmt = function
   | D_uniform -> Format.fprintf fmt "Uniform"

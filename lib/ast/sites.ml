@@ -25,17 +25,28 @@ let rec dist_kind = function
   | D_product (a, b) ->
       if dist_kind a = `Cont && dist_kind b = `Cont then `Cont else `Disc
 
-let rec dist_support = function
+(* The support of a categorical is its category count, which is the last axis of
+   its weights.  Const weights carry their own shape.  Weights computed from a
+   parameter -- Categorical(exp logits) -- need either shape inference or an
+   evaluation to size, and both live above this layer, so the caller may supply a
+   resolver.  Without one the size stays unknown and this still refuses, rather
+   than guessing a support. *)
+let rec dist_support ?(categorical_size = fun _ -> None) dist =
+  let recurse = dist_support ~categorical_size in
+  match dist with
   | D_uniform -> S_unit_interval
   | D_categorical (Const (_, weights)) ->
       let shape = weights.View.Tensor.view.View.Ndview.shape in
       if Array.length shape = 0 then
         failwith "dist_support: categorical weights need a category axis";
       S_finite shape.(Array.length shape - 1)
-  | D_categorical _ ->
-      failwith "dist_support: categorical size must be statically known"
+  | D_categorical weights -> (
+      match categorical_size weights with
+      | Some size -> S_finite size
+      | None ->
+          failwith "dist_support: categorical size must be statically known")
   | D_pushforward { support; _ } -> support
-  | D_product (a, b) -> S_product (dist_support a, dist_support b)
+  | D_product (a, b) -> S_product (recurse a, recurse b)
 
 let rec support_subset left right =
   left = right

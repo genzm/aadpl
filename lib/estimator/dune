@@ -1,5 +1,7 @@
 (library
  (name estimator)
  (public_name lang.estimator)
- (modules estimator types elbo lower_pathwise)
- (libraries ast transform prng))
+ (modules estimator types strategy lit rename decompose elbo lower_pathwise
+  lower_enumerate
+  lower_score)
+ (libraries ast transform view prng))

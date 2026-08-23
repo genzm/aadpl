@@ -289,6 +289,9 @@ and forward_prim (p : prim) (fwd_args : (bindings * expr * expr) list) :
   | (Log_support_density _ as p), [ (bs, px, tx) ] ->
       let bs_v, v = ensure_var "p" px in
       (bs @ bs_v, prim p [v], prim Sub [tx; tx])
+  | Stop_gradient, [ (bs, px, tx) ] ->
+      let bs_v, v = ensure_var "p" px in
+      (bs @ bs_v, prim Stop_gradient [ v ], prim Sub [ tx; tx ])
   | Sqrt, [ (bs, px, tx) ] ->
       (* residual: sqrt(x); tangent = tx / (sqrt(x) + sqrt(x)) *)
       let bs_v, v = ensure_var "p" px in

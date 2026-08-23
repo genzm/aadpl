@@ -103,6 +103,9 @@ and jvp_prim loc (p : Types.prim) (ds : dual list) : dual =
   | Log_unit_density, [(x, _dx)] ->
     (Tensor.make (shape_of x), zeros_like x)
 
+  | Stop_gradient, [(x, _dx)] ->
+    (x, zeros_like x)
+
   | Log_support_density support, [(x, _dx)] ->
     Eval.validate loc (Log_support_density support) [x];
     (Tensor.make (shape_of x), zeros_like x)

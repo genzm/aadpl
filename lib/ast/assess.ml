@@ -34,8 +34,16 @@ let frame_cell frame i (t : Tensor.t) =
 
 exception Support_error of Types.loc * string
 
-let check_support loc name dist (x : Tensor.t) =
-  let support = Sites.dist_support dist in
+let check_support ~(env : Eval.env) loc name dist (x : Tensor.t) =
+  (* Here the weights can simply be evaluated, so learned weights resolve as
+     easily as constant ones. *)
+  let categorical_size weights =
+    let value = Eval.eval env weights in
+    let shape = value.view.Ndview.shape in
+    if Array.length shape = 0 then None
+    else Some shape.(Array.length shape - 1)
+  in
+  let support = Sites.dist_support ~categorical_size dist in
   let n = Ndview.numel x.view in
   for i = 0 to n - 1 do
     if not (Sites.support_contains support (Buf.get x.buf i)) then
@@ -132,7 +140,7 @@ let assess (env : Eval.env) (e : Types.expr)
       scalar 0.0
     | Sample (loc, name, frame, dist) ->
       let v = List.assoc name trace in
-      check_support loc name dist v;
+      check_support ~env loc name dist v;
       if frame = [||] then begin
         let ld = log_density dist v env in
         log_density_acc := !log_density_acc +. ld
