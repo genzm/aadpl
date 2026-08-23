@@ -82,9 +82,9 @@ let test_frame_sample_score_assess () =
 let test_conjugate_elbo_fd () =
   let samples = 7 in
   let model, guide, env_shapes = conjugate_program samples in
-  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
   let average_elbo =
-    prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.elbo ]
+    prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.loss ]
   in
   let gp = Transform.grad
     ~param_shapes:[("mu_q", [||]); ("log_sigma_q", [||])]
@@ -96,7 +96,7 @@ let test_conjugate_elbo_fd () =
     average_elbo
   in
   let fixed_env =
-    Transform.noise_env program ~run_key:42L @ [
+    Estimator.noise_env program ~run_key:42L @ [
       ("prior_mu", scalar 0.0); ("prior_sigma", scalar 1.0);
       ("x_obs", scalar 1.2); ("obs_sigma", scalar 0.7);
     ]
@@ -120,9 +120,9 @@ let test_conjugate_gaussian_vi () =
   let observed = 1.2 in
   let observation_sigma = 0.7 in
   let model, guide, env_shapes = conjugate_program samples in
-  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
   let average_elbo =
-    prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.elbo ]
+    prim Mul [ const (scalar (1.0 /. float_of_int samples)); program.loss ]
   in
   let param_shapes = [ ("mu_q", [||]); ("log_sigma_q", [||]) ] in
   let fixed_shapes =
@@ -154,7 +154,7 @@ let test_conjugate_gaussian_vi () =
     (* SGD convention: redraw u from the deterministic Threefry stream each
        step.  MNIST uses the same policy; fixed run_key would instead be SAA. *)
     let env =
-      Transform.noise_env program ~run_key:(Int64.of_int step)
+      Estimator.noise_env program ~run_key:(Int64.of_int step)
       @ [ ("mu_q", scalar !mu_q); ("log_sigma_q", scalar !log_sigma_q) ]
       @ fixed_env
     in
@@ -166,7 +166,7 @@ let test_conjugate_gaussian_vi () =
   let initial_elbo, _ = evaluate 0 in
   for step = 1 to 500 do
     let _, gradients = evaluate step in
-    (* build_elbo returns ELBO, so Adam deliberately updates in ascent direction. *)
+    (* the objective is an ELBO, so Adam deliberately updates in ascent direction. *)
     mu_q :=
       adam_ascent ~step ~learning_rate:0.03 mu_state !mu_q
         (scalar_value (List.assoc "mu_q" gradients));

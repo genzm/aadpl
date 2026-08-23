@@ -6,7 +6,7 @@
 (executable
  (name vae)
  (public_name lang-vae)
- (libraries view ast transform prng unix))
+ (libraries view ast estimator transform prng unix))
 
 (executable
  (name diffusion)

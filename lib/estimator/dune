@@ -1,0 +1,5 @@
+(library
+ (name estimator)
+ (public_name lang.estimator)
+ (modules estimator types elbo lower_pathwise)
+ (libraries ast transform prng))

@@ -56,13 +56,13 @@ let test_elbo_eval () =
   let env_shapes =
     [ ("mu_m", [||]); ("sigma_m", [||]); ("mu_g", [||]); ("sigma_g", [||]) ]
   in
-  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
   check
     (list (pair string (array int)))
     "noise"
     [ ("%u.z", [||]) ]
     program.noise;
-  let guide_noise = Transform.noise_env program ~run_key:42L in
+  let guide_noise = Estimator.noise_env program ~run_key:42L in
   let model_noise = Ast.Sites.draw_noise ~run_key:42L program.sites in
   check bool "guide/model namespaces differ" true
     (scalar_val (List.assoc "%u.z" guide_noise)
@@ -75,18 +75,18 @@ let test_elbo_eval () =
       ("mu_m", mu_m); ("sigma_m", sigma_m); ("mu_g", mu_g); ("sigma_g", sigma_g);
     ]
   in
-  let elbo_sym = scalar_val (Ast.Eval.eval (noise @ env) program.elbo) in
+  let elbo_sym = scalar_val (Ast.Eval.eval (noise @ env) program.loss) in
   check (float 1e-12) "ELBO eval" elbo_val elbo_sym
 
 let test_noise_namespaces () =
   let guide = sample "z" [||] D_uniform in
   let sites = Ast.Sites.collect_sites guide in
-  let program = Transform.build_elbo ~slots:[] ~model:guide ~guide ~env_shapes:[] in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model:guide ~guide ~env_shapes:[] in
   let _, trace, _ = Ast.Simulate.simulate ~sites ~run_key:42L [] guide in
   let model_noise = Ast.Sites.draw_noise ~run_key:42L sites in
   let guide_noise = Ast.Sites.draw_noise
     ~namespace:Prng.Threefry.ns_guide ~run_key:42L sites in
-  let helper_noise = Transform.noise_env program ~run_key:42L in
+  let helper_noise = Estimator.noise_env program ~run_key:42L in
   let traced = scalar_val (List.assoc "z" trace) in
   let model_u = scalar_val (List.assoc "%u.z" model_noise) in
   let guide_u = scalar_val (List.assoc "%u.z" guide_noise) in
@@ -103,12 +103,12 @@ let test_elbo_grad () =
   let env_shapes =
     [ ("mu_m", [||]); ("sigma_m", [||]); ("mu_g", [||]); ("sigma_g", [||]) ]
   in
-  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
 
   (* grad wrt guide params *)
   let param_shapes = [ ("mu_g", [||]); ("sigma_g", [||]) ] in
   let data_shapes = program.noise @ [ ("mu_m", [||]); ("sigma_m", [||]) ] in
-  let gp = Transform.grad ~param_shapes ~data_shapes program.elbo in
+  let gp = Transform.grad ~param_shapes ~data_shapes program.loss in
 
   (* Evaluation point *)
   let mu_g_val = 0.3 in
@@ -169,10 +169,10 @@ let test_elbo_coupling () =
   let env_shapes =
     [ ("mu_m", [||]); ("sigma_m", [||]); ("mu_g", [||]); ("sigma_g", [||]) ]
   in
-  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
   let param_shapes = [ ("mu_g", [||]); ("sigma_g", [||]) ] in
   let data_shapes = program.noise @ [ ("mu_m", [||]); ("sigma_m", [||]) ] in
-  let gp = Transform.grad ~param_shapes ~data_shapes program.elbo in
+  let gp = Transform.grad ~param_shapes ~data_shapes program.loss in
 
   (* FD at TWO different operating points — both should pass *)
   let u_val = 0.62 in
@@ -239,7 +239,7 @@ let test_mlp_guide_fd () =
       ("sigma_g", [||]);
     ]
   in
-  let program = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let program = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
   check
     (list (pair string (array int)))
     "MLP noise"
@@ -256,7 +256,7 @@ let test_mlp_guide_fd () =
             ("sigma_m", [||]);
             ("sigma_g", [||]);
           ])
-      program.elbo
+      program.loss
   in
   let x = tensor_of_array [| 1; 2 |] [| 0.4; -0.7 |] in
   let w0 = [| 1.0; 0.5; -0.2; -0.7 |] in
@@ -304,7 +304,7 @@ let test_two_site_value_match () =
       (fun name -> (name, [||]))
       [ "mz"; "sz"; "mw"; "sw"; "qz"; "qsz"; "qw"; "qsw" ]
   in
-  let built = Transform.build_elbo ~slots:[] ~model ~guide ~env_shapes in
+  let built = Estimator.lower_pathwise @@ Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
   check
     (list (pair string (array int)))
     "two noises"
@@ -327,7 +327,7 @@ let test_two_site_value_match () =
   let _, guide_ld = Ast.Assess.assess env guide trace_z in
   let expected = scalar_val model_ld -. scalar_val guide_ld in
   let noise_env = Ast.Sites.draw_noise ~run_key:123L built.sites in
-  let actual = scalar_val (Ast.Eval.eval (noise_env @ env) built.elbo) in
+  let actual = scalar_val (Ast.Eval.eval (noise_env @ env) built.loss) in
   check (float 1e-12) "two-site ELBO" expected actual
 
 (* ── Test suite ── *)

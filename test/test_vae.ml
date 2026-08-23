@@ -103,12 +103,12 @@ let test_assess_two_frames () =
 
 let test_all_parameter_fd () =
   let model, guide, param_shapes, data_shapes = vae ~batch:3 ~latent:2 ~obs:4 in
-  let program = Transform.build_elbo
+  let program = Estimator.lower_pathwise @@ Estimator.elbo
     ~slots:[] ~model ~guide ~env_shapes:(param_shapes @ data_shapes) in
   let gp = Transform.grad ~param_shapes
-    ~data_shapes:(program.noise @ data_shapes) program.elbo in
+    ~data_shapes:(program.noise @ data_shapes) program.loss in
   let params = parameters () in
-  let fixed = Transform.noise_env program ~run_key:23L @ data () in
+  let fixed = Estimator.noise_env program ~run_key:23L @ data () in
   let env = params @ fixed in
   let epsilon = 1e-5 in
   let eval ps = value (Ast.Eval.eval (ps @ fixed) gp.loss) 0 in

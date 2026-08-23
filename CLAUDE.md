@@ -29,6 +29,20 @@ This is an **array language** with automatic differentiation and probabilistic p
 | `prng` | Threefry-2x64 counter-based PRNG. Counter encodes site_id, component (D_product tree), frame_index. |
 | `ast` | Core types + interpreters. `Types` (expr, prim, viewspec, dist), `Eval` (deterministic), `Jvp` (forward-mode AD), `Simulate` (probabilistic with Threefry sampling), `Sites` (static site enumeration), `Normal` (Gaussian via D_pushforward). |
 | `transform` | AST→AST passes (see pipeline below). |
+| `estimator` | Estimator IR: which statistical quantity is wanted (`Elbo`), separated from how it is estimated (`Lower_pathwise`). Depends on `transform`. |
+
+### Layering
+
+```
+Model AST  --(Estimator.elbo)-->  Estimator IR  --(Estimator.lower_pathwise)-->  Tensor AST
+                                                                                     |
+                                                        Transform.grad: Forward → Unzip → Transpose
+```
+
+`estimator` states the objective (`E_{z~q}[log p − log q]`); a lowering picks the estimator and
+produces an ordinary tensor program whose only stochastic inputs are the free noise variables
+`%u.<site>`. `transform` never depends on `estimator` — the dune library boundary enforces the
+direction.
 
 ### Transform pipeline
 
@@ -40,9 +54,9 @@ The `Transform.grad` function chains these passes for reverse-mode AD:
 4. **Unzip** — Separates bindings into primal-only vs tangent-dependent. Verifies linearity of tangent part.
 5. **Transpose** — Reverse-mode from tangent-linear part. Walks tangent bindings in reverse, propagates cotangents using adjoint rules. Fan-out sums cotangents.
 
-For probabilistic programs, `Transform.build_elbo` additionally uses:
-- **Reparam** — Eliminates `D_pushforward` from guide samples, substituting base distributions + forward transforms.
-- **Assess_expr** — Builds symbolic log-density expressions for model/guide, handling Jacobian determinants for pushforwards.
+For probabilistic programs, the `estimator` layer additionally uses:
+- **Assess_expr** — Builds symbolic log-density expressions for model/guide, handling Jacobian determinants for pushforwards. Used by `Estimator.elbo` to form the integrand.
+- **Reparam** — Eliminates `D_pushforward` from guide samples, substituting base distributions + forward transforms. Used by `Estimator.lower_pathwise`, not by the objective.
 
 ### Key type: `expr` (in `lib/ast/types.ml`)
 

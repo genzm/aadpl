@@ -58,69 +58,6 @@ type grad_program = {
   grad_bodies : (string * expr) list; (* (param_name, grad_body_expr) *)
 }
 
-type elbo_program = {
-  elbo : expr;
-  sites : Ast.Sites.site list;
-  noise : (string * int array) list;
-}
-
-let noise_env (program : elbo_program) ~run_key =
-  Ast.Sites.draw_noise ~namespace:Prng.Threefry.ns_guide ~run_key program.sites
-
-let build_elbo ~(slots : Ast.Sites.slot list) ~model ~guide
-    ~(env_shapes : (string * int array) list) :
-    elbo_program =
-  Reparam.check_guide guide;
-  let model_sites = Ast.Sites.collect_sites model in
-  let sites = Ast.Sites.collect_sites guide in
-  Reparam.check_trace_compat_sites ~slots ~model_sites ~guide_sites:sites ();
-  Reparam.check_support_compat ~model_sites ~guide_sites:sites;
-  List.iter
-    (fun (name, _, value) ->
-      let site = Ast.Sites.find name model_sites in
-      let shape = Expand_rank.infer_shape env_shapes value in
-      if shape <> site.frame then
-        raise
-          (Reparam.Trace_mismatch
-             (Printf.sprintf "slotted site '%s' shape does not match frame"
-                name)))
-    slots;
-  let noise =
-    List.map
-      (fun (site : Ast.Sites.site) -> (Ast.Sites.noise_name site, site.frame))
-      sites
-  in
-  let density_slots =
-    List.map
-      (fun (site : Ast.Sites.site) ->
-        (site.name, var (Ast.Sites.trace_name site)))
-      sites @ List.map (fun (name, _, value) -> name, value) slots
-  in
-  let guide_r = Reparam.reparam ~sites guide in
-  let bindings, _ = Reparam.elim_samples ~sites guide_r in
-  let model = Expand_rank.expand ~senv:env_shapes model in
-  let guide = Expand_rank.expand ~senv:env_shapes guide in
-  let trace_shapes =
-    List.map
-      (fun (site : Ast.Sites.site) -> (Ast.Sites.trace_name site, site.frame))
-      sites
-  in
-  let assess_shapes = trace_shapes @ env_shapes in
-  let model_ld =
-    let excluded = List.filter_map (function
-      | name, `Maximize, _ -> Some name | _, `Condition, _ -> None) slots in
-    Assess_expr.assess_expr ~ns:"m." ~exclude_density:excluded
-      ~env_shapes:assess_shapes model density_slots
-  in
-  let guide_ld =
-    Assess_expr.assess_expr ~ns:"g." ~env_shapes:assess_shapes guide density_slots
-  in
-  let body = prim Sub [ model_ld; guide_ld ] in
-  let elbo = Forward.wrap_let_bindings bindings body in
-  let elbo = Expand_rank.expand ~senv:(noise @ env_shapes) elbo in
-  let elbo = Desugar.fuse_views elbo in
-  { elbo; sites; noise }
-
 let grad ~(param_shapes : (string * int array) list)
     ?(data_shapes : (string * int array) list = []) (e : expr) : grad_program =
   check_no_samples e;

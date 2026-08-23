@@ -1,5 +1,6 @@
-(* Phase 11-5: MNIST VAE.  build_elbo and grad run once; each training step
-   only draws guide noise, evaluates the transformed program, and updates Adam. *)
+(* Phase 11-5: MNIST VAE.  The objective, its lowering, and grad all run once;
+   each training step only draws guide noise, evaluates the transformed program,
+   and updates Adam. *)
 
 open View
 open Ast.Types
@@ -76,10 +77,10 @@ let make_program ~batch ~latent ~hidden ~pixels =
   let data_shapes =
     [("x", [|batch; pixels|]); ("prior_mu", [||]); ("prior_sigma", [||])]
   in
-  let program = Transform.build_elbo
+  let program = Estimator.lower_pathwise @@ Estimator.elbo
     ~slots:[] ~model ~guide ~env_shapes:(param_shapes @ data_shapes) in
   let average_elbo =
-    prim Mul [const (scalar (1.0 /. float_of_int batch)); program.elbo]
+    prim Mul [const (scalar (1.0 /. float_of_int batch)); program.loss]
   in
   let gradient = Transform.grad ~param_shapes
     ~data_shapes:(program.noise @ data_shapes) average_elbo in
@@ -277,7 +278,7 @@ let () =
       let batch_key = Int64.add run_key (Int64.of_int bi) in
       let x = sequential_batch ~run_key:batch_key images
         (bi * batch) batch pixels in
-      let env = Transform.noise_env program
+      let env = Estimator.noise_env program
         ~run_key:batch_key
         @ (("x", x) :: !params @ fixed) in
       total := !total +. scalar_value (Ast.Eval.eval env average_elbo)
@@ -299,7 +300,7 @@ let () =
       incr step;
       let x = batch_from ~run_key:(Int64.of_int epoch) train indices
         (bi * batch) batch pixels in
-      let env = Transform.noise_env program ~run_key:(Int64.of_int !step)
+      let env = Estimator.noise_env program ~run_key:(Int64.of_int !step)
         @ (("x", x) :: !params @ fixed) in
       let elbo, gradients = Ast.Eval.eval_grad env
         ~primal_bindings:gradient.primal_bindings

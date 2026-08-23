@@ -74,29 +74,34 @@
  (libraries transform ast alcotest))
 
 (test
+ (name test_estimator)
+ (modules test_estimator)
+ (libraries estimator transform ast view alcotest))
+
+(test
  (name test_elbo)
  (modules test_elbo)
- (libraries transform ast alcotest))
+ (libraries estimator transform ast alcotest))
 
 (test
  (name test_vi)
  (modules test_vi)
- (libraries transform ast alcotest))
+ (libraries estimator transform ast alcotest))
 
 (test
  (name test_vae)
  (modules test_vae)
- (libraries transform ast alcotest))
+ (libraries estimator transform ast alcotest))
 
 (test
  (name test_phase12)
  (modules test_phase12)
- (libraries transform ast alcotest))
+ (libraries estimator transform ast alcotest))
 
 (test
  (name test_phase13)
  (modules test_phase13)
- (libraries transform ast alcotest))
+ (libraries estimator transform ast alcotest))
 
 (test
  (name test_scan)

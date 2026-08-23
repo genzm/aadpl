@@ -106,7 +106,7 @@ let reparam ?sites (e : expr) : expr =
 (* Eliminate primitive samples from a reparameterized guide and flatten all
    Let nodes into a shared binding list.  Uniform samples become free noise
    variables; their generated self-bindings are omitted.  The result expression
-   is returned for completeness, although build_elbo only needs the bindings. *)
+   is returned for completeness, although lower_pathwise only needs the bindings. *)
 exception Elim_error of loc * string
 
 let elim_samples ~(sites : Ast.Sites.site list) (e : expr) :

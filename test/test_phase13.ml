@@ -90,10 +90,10 @@ let test_frame_categorical_observation () =
     |> Ast.Eval.eval [("y_obs", y)] in
   check (float 1e-12) "frame categorical assess equals expression"
     (value assessed 0) (value symbolic 0);
-  let program = Transform.build_elbo
+  let program = Estimator.lower_pathwise @@ Estimator.elbo
     ~slots:[("y", `Condition, var "y_obs")]
     ~model ~guide:(const (scalar 0.0)) ~env_shapes:[("y_obs", frame)] in
-  let elbo = Ast.Eval.eval [("y_obs", y)] program.elbo in
+  let elbo = Ast.Eval.eval [("y_obs", y)] program.loss in
   check (float 1e-12) "observed categorical enters ELBO"
     (value assessed 0) (value elbo 0)
 
@@ -101,13 +101,13 @@ let test_slot_roles () =
   let model = sample "theta" [||]
     (Ast.Normal.normal ~mu:"zero" ~sigma:"one") in
   let env_shapes = [("zero", [||]); ("one", [||]); ("theta_value", [||])] in
-  let make role = Transform.build_elbo
+  let make role = Estimator.lower_pathwise @@ Estimator.elbo
     ~slots:[("theta", role, var "theta_value")]
     ~model ~guide:(const (scalar 0.0)) ~env_shapes in
   let env = [("zero", scalar 0.0); ("one", scalar 1.0);
     ("theta_value", scalar 2.0)] in
-  let condition = Ast.Eval.eval env (make `Condition).elbo |> fun result -> value result 0
-  and maximize = Ast.Eval.eval env (make `Maximize).elbo |> fun result -> value result 0 in
+  let condition = Ast.Eval.eval env (make `Condition).loss |> fun result -> value result 0
+  and maximize = Ast.Eval.eval env (make `Maximize).loss |> fun result -> value result 0 in
   check (float 1e-12) "Condition includes site density"
     (-.0.5 *. log (2.0 *. Float.pi) -. 2.0) condition;
   check (float 0.0) "Maximize excludes site density" 0.0 maximize
@@ -261,11 +261,11 @@ let test_gaussian_bayes_factor_closed_form () =
   let env = [("zero", scalar 0.0); ("prior_scale", scalar prior_scale);
     ("obs_scale", scalar obs_scale); ("y_obs", scalar y);
     ("theta_zero", scalar 0.0)] in
-  let h0 = Transform.build_elbo
+  let h0 = Estimator.lower_pathwise @@ Estimator.elbo
     ~slots:[("theta", `Maximize, var "theta_zero");
             ("y", `Condition, var "y_obs")]
     ~model ~guide:(const (scalar 0.0)) ~env_shapes in
-  let log_h0 = Ast.Eval.eval env h0.elbo |> fun result -> value result 0 in
+  let log_h0 = Ast.Eval.eval env h0.loss |> fun result -> value result 0 in
   let log_normal x sigma =
     -.0.5 *. log (2.0 *. Float.pi) -. log sigma
     -. 0.5 *. (x /. sigma) ** 2.0 in
