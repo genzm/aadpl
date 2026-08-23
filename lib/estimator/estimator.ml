@@ -7,6 +7,7 @@ module Lower_score = Lower_score
 module Rename = Rename
 module Decompose = Decompose
 module Lit = Lit
+module Batch = Batch
 
 (* State the objective, then choose the estimator:
 

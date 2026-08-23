@@ -532,7 +532,8 @@ let chain_program () =
          (D_categorical (prim Exp [ rank 0 Mul [ var "x"; var "phi_y" ] ])))
   in
   (model, guide,
-   [ ("theta", [||]); ("phi_x", [| 2 |]); ("phi_y", [| 2 |]) ])
+   (* "b" is declared for the baseline tests; the program itself never reads it *)
+   [ ("theta", [||]); ("phi_x", [| 2 |]); ("phi_y", [| 2 |]); ("b", [||]) ])
 
 let chain_env =
   [
@@ -568,11 +569,11 @@ let chain_weights () =
 
 (* Exact mean and variance of an estimator, over the joint support.  Both are
    sums, so neither needs sampling. *)
-let moments expression width =
+let moments ?(extra = []) expression width =
   let mean = Array.make width 0.0 and square = Array.make width 0.0 in
   List.iter
     (fun ((x, y), q) ->
-      let g = Ast.Eval.eval (trace_env x y @ chain_env) expression in
+      let g = Ast.Eval.eval (trace_env x y @ extra @ chain_env) expression in
       for i = 0 to width - 1 do
         let v = element g i in
         mean.(i) <- mean.(i) +. (q *. v);
@@ -581,14 +582,21 @@ let moments expression width =
     (chain_weights ());
   (mean, Array.mapi (fun i s -> s -. (mean.(i) *. mean.(i))) square)
 
-let score_gradient options param =
+let score_gradient ?(params = chain_params) options param =
   let objective = chain_objective () in
   let program = Estimator.lower_score ~options objective in
   let gp =
-    Transform.grad ~param_shapes:chain_params ~data_shapes:chain_draws
-      program.loss
+    Transform.grad ~param_shapes:params ~data_shapes:chain_draws program.loss
   in
   List.assoc param gp.grads
+
+let chain_sites () =
+  match chain_objective () with
+  | Estimator.Types.Expect expectation -> expectation.Estimator.Types.sites
+  | Estimator.Types.Deterministic _ -> []
+
+let constant value =
+  Estimator.Lower_score.everywhere (Estimator.Lit.scalar value) (chain_sites ())
 
 let exact_gradient param =
   let program = Estimator.lower_enumerate (chain_objective ()) in
@@ -646,8 +654,13 @@ let test_variants_are_unbiased () =
     [
       ("plain", Estimator.Lower_score.plain);
       ("loss-to-go", { Estimator.Lower_score.plain with loss_to_go = true });
-      ("baseline", { Estimator.Lower_score.plain with baseline = 1.5 });
-      ("both", { Estimator.Lower_score.loss_to_go = true; baseline = 1.5 });
+      ("baseline", { Estimator.Lower_score.plain with baselines = constant 1.5 });
+      ( "both",
+        {
+          Estimator.Lower_score.loss_to_go = true;
+          baselines = constant 1.5;
+        } );
+
     ]
   in
   List.iter
@@ -689,7 +702,7 @@ let test_baseline_reduces_variance () =
   let program = Estimator.lower_enumerate (chain_objective ()) in
   let elbo = value (Ast.Eval.eval chain_env program.loss) in
   let plain = Estimator.Lower_score.plain in
-  let centred = { plain with Estimator.Lower_score.baseline = elbo } in
+  let centred = { plain with Estimator.Lower_score.baselines = constant elbo } in
   let _, plain_var = moments (score_gradient plain "phi_x") 2 in
   let _, centred_var = moments (score_gradient centred "phi_x") 2 in
   Printf.printf "\n=== phi_x variance: plain %.6f %.6f -> baseline %.6f %.6f ===\n"
@@ -701,6 +714,194 @@ let test_baseline_reduces_variance () =
         true
         (centred_var.(i) < before))
     plain_var
+
+(* ── Step 12: the enumeration axis ── *)
+
+let program_size (program : Estimator.Types.program) =
+  String.length (Format.asprintf "%a" Ast.Types.pp program.Estimator.Types.loss)
+
+let check_same_program label ~params ~env (a : Estimator.Types.program)
+    (b : Estimator.Types.program) =
+  check (float 1e-12) (label ^ " value")
+    (value (Ast.Eval.eval env a.Estimator.Types.loss))
+    (value (Ast.Eval.eval env b.Estimator.Types.loss));
+  let ga = Transform.grad ~param_shapes:params a.Estimator.Types.loss in
+  let gb = Transform.grad ~param_shapes:params b.Estimator.Types.loss in
+  List.iter
+    (fun (name, shape) ->
+      let width = Array.fold_left ( * ) 1 shape in
+      let va = Ast.Eval.eval env (List.assoc name ga.Transform.grads) in
+      let vb = Ast.Eval.eval env (List.assoc name gb.Transform.grads) in
+      for i = 0 to width - 1 do
+        check (float 1e-12)
+          (Printf.sprintf "%s d/d%s[%d]" label name i)
+          (element va i) (element vb i)
+      done)
+    params
+
+(* The batched form has to agree with the replicated one it replaces, on the
+   value and on every gradient.  Keeping both is the same discipline that keeps
+   Kernel.Naive alive next to BLAS. *)
+let test_batched_enumeration_matches_replicated () =
+  let model, guide, env_shapes = learned_program () in
+  let single = Estimator.elbo ~slots:[] ~model ~guide ~env_shapes in
+  let replicated = Estimator.lower_enumerate single in
+  let batched = Estimator.lower_enumerate ~batched:true single in
+  check (list string) "batched draws nothing" [] (List.map fst batched.noise);
+  check_same_program "one site"
+    ~params:[ ("theta", [||]); ("logits", [| 3 |]) ]
+    ~env:[ ("theta", scalar 0.4); ("logits", tensor [| 3 |] logits) ]
+    replicated batched;
+  let chain = chain_objective () in
+  let replicated = Estimator.lower_enumerate chain in
+  let batched = Estimator.lower_enumerate ~batched:true chain in
+  check_same_program "two sites" ~params:chain_params ~env:chain_env replicated
+    batched;
+  Printf.printf
+    "\n=== enumeration program size: replicated %d chars -> batched %d ===\n"
+    (program_size replicated) (program_size batched)
+
+(* The replication limit is a property of replicating, not of enumerating. *)
+let test_replication_limit_only_binds_the_replicating_form () =
+  let sites = 13 in
+  let two = const (tensor [| 2 |] [| 1.0; 1.0 |]) in
+  let names = List.init sites (fun i -> Printf.sprintf "z%d" i) in
+  let chain body =
+    List.fold_right
+      (fun name inner -> let_ name (sample name [||] (D_categorical two)) inner)
+      names body
+  in
+  let model = chain (score (const (scalar 0.0))) in
+  let guide = chain (const (scalar 0.0)) in
+  let objective = Estimator.elbo ~slots:[] ~model ~guide ~env_shapes:[] in
+  let raised =
+    try
+      ignore (Estimator.lower_enumerate objective);
+      false
+    with Estimator.Lower_enumerate.Enumerate_error message ->
+      check bool "points at the axis form" true (contains message "batched")
+      |> fun () -> true
+  in
+  check bool "8192 replicated bodies are refused" true raised;
+  let batched = Estimator.lower_enumerate ~batched:true objective in
+  check (float 1e-9) "the axis form enumerates them anyway" 0.0
+    (value (Ast.Eval.eval [] batched.loss))
+
+(* ── Step 11: baselines that are expressions ── *)
+
+(* A baseline may be a parameter, so a caller can fit one.  It changes nothing
+   about the expectation, whatever value it takes. *)
+let test_parameter_baseline_is_unbiased () =
+  let sites = chain_sites () in
+  let options =
+    {
+      Estimator.Lower_score.plain with
+      baselines = Estimator.Lower_score.everywhere (var "b") sites;
+    }
+  in
+  let params = ("b", [||]) :: chain_params in
+  let extra = [ ("b", scalar 2.0) ] in
+  List.iter
+    (fun (param, width) ->
+      let exact = exact_gradient param in
+      let mean, _ = moments ~extra (score_gradient ~params options param) width in
+      Array.iteri
+        (fun i got ->
+          check (float 1e-12)
+            (Printf.sprintf "parameter baseline: E[g] for %s[%d]" param i)
+            (element exact i) got)
+        mean)
+    [ ("theta", 1); ("phi_x", 2); ("phi_y", 2) ]
+
+(* A baseline for the second site may read the first draw.  Two things are the
+   implementation's to guarantee, and both are checked exactly: such a baseline
+   is unbiased, and -- since the constants are a sub-family of it -- its optimum
+   is never worse than the best constant's.
+
+   Whether it is strictly better is a fact about the model, not about the
+   estimator, and in this one it is not: the guide's second factor has weights
+   exp(x * phi_y), so at x = 0 they are uniform and the score factor vanishes
+   identically.  There is no variance to remove in that state, and both optima
+   land on the same number.
+   Two related observations, kept because they are easy to get wrong: the
+   variance-minimising baseline is E[g s] / E[s^2] with s the score factor, not
+   the conditional mean of the cost -- E[f | x] here is markedly WORSE than the
+   best constant.  The estimator is affine in b, so g(0) - g(1) recovers s and
+   both optima follow in closed form. *)
+let test_state_dependent_baseline_is_sound () =
+  let with_baseline expression =
+    { Estimator.Lower_score.plain with baselines = [ ("y", expression) ] }
+  in
+  let at_zero = score_gradient (with_baseline (Estimator.Lit.scalar 0.0)) "phi_y"
+  and at_one = score_gradient (with_baseline (Estimator.Lit.scalar 1.0)) "phi_y" in
+  let rows =
+    List.map
+      (fun ((x, y), q) ->
+        let env = trace_env x y @ chain_env in
+        let g = element (Ast.Eval.eval env at_zero) 0 in
+        let shifted = element (Ast.Eval.eval env at_one) 0 in
+        (x, q, g, g -. shifted))
+      (chain_weights ())
+  in
+  let optimum select =
+    let numerator = ref 0.0 and denominator = ref 0.0 in
+    List.iter
+      (fun (x, q, g, s) ->
+        if select x then begin
+          numerator := !numerator +. (q *. g *. s);
+          denominator := !denominator +. (q *. s *. s)
+        end)
+      rows;
+    if !denominator = 0.0 then 0.0 else !numerator /. !denominator
+  in
+  let best_constant = optimum (fun _ -> true) in
+  let per_state = Array.init 2 (fun target -> optimum (fun x -> x = target)) in
+  let one = Estimator.Lit.scalar 1.0 in
+  let state =
+    rank 0 Add
+      [
+        rank 0 Mul
+          [ Estimator.Lit.scalar per_state.(0); rank 0 Sub [ one; var "%tr.x" ] ];
+        rank 0 Mul [ Estimator.Lit.scalar per_state.(1); var "%tr.x" ];
+      ]
+  in
+  (* unbiased, whatever the baseline reads of the past *)
+  let mean, state_variance = moments (score_gradient (with_baseline state) "phi_y") 2 in
+  let exact = exact_gradient "phi_y" in
+  Array.iteri
+    (fun i got ->
+      check (float 1e-12)
+        (Printf.sprintf "state-dependent baseline: E[g] for phi_y[%d]" i)
+        (element exact i) got)
+    mean;
+  let _, constant_variance =
+    moments
+      (score_gradient (with_baseline (Estimator.Lit.scalar best_constant)) "phi_y")
+      2
+  in
+  Printf.printf
+    "\n=== phi_y[0] variance at the optimum: constant %.9f, per-state %.9f \
+     (b* = %.4f vs %.4f / %.4f) ===\n"
+    constant_variance.(0) state_variance.(0) best_constant per_state.(0)
+    per_state.(1);
+  check bool "the state-dependent optimum is never worse" true
+    (state_variance.(0) <= constant_variance.(0) +. 1e-12)
+
+(* Reading its own draw would bias the estimator, so it is refused rather than
+   quietly accepted. *)
+let test_baseline_may_not_read_its_own_site () =
+  let options =
+    { Estimator.Lower_score.plain with baselines = [ ("x", var "%tr.x") ] }
+  in
+  let raised =
+    try
+      ignore (Estimator.lower_score ~options (chain_objective ()));
+      false
+    with Estimator.Lower_score.Score_error message ->
+      check bool "names the offending draw" true (contains message "%tr.x");
+      true
+  in
+  check bool "a baseline that peeks at its own site is refused" true raised
 
 let () =
   run "Estimator"
@@ -759,5 +960,18 @@ let () =
             test_loss_to_go_reduces_variance;
           test_case "baseline reduces variance" `Quick
             test_baseline_reduces_variance;
+          test_case "parameter baseline is unbiased" `Quick
+            test_parameter_baseline_is_unbiased;
+          test_case "state-dependent baseline is sound" `Quick
+            test_state_dependent_baseline_is_sound;
+          test_case "baseline may not read its own site" `Quick
+            test_baseline_may_not_read_its_own_site;
+        ] );
+      ( "enumeration axis",
+        [
+          test_case "batched matches replicated" `Quick
+            test_batched_enumeration_matches_replicated;
+          test_case "replication limit binds only replication" `Quick
+            test_replication_limit_only_binds_the_replicating_form;
         ] );
     ]

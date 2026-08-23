@@ -23,8 +23,17 @@
      E[c grad log q_i | z_<i] = c * E[grad log q_i | z_<i] = 0 and removing it
      is free.  The test for this is exact, not statistical: on a finite support
      both the expectation and the variance are sums.
-   - a constant baseline is the classic control variate, unbiased for the same
-     reason: E[b grad log q_i] = b * 0.
+   - a baseline is the classic control variate, unbiased for the same reason:
+     E[b grad log q_i | z_<i] = b * 0, PROVIDED b is measurable in z_<i.  So a
+     baseline may be a constant, or a parameter, or an expression in the draws
+     made BEFORE its site -- but never one that peeks at its own site or a later
+     one, which would bias the estimator silently.  That condition is checked.
+
+     Note what the baseline does not do: it sits inside stopgrad, so d L / d b is
+     zero and it cannot be learned by differentiating this objective.  Fitting a
+     baseline is a separate problem with a separate objective, written by the
+     caller.  A baseline's free variables have to be declared in the objective's
+     env_shapes, like any other name the program reads.
 
    Unlike a pathwise lowering there is no reparameterization: z is drawn from the
    proposal outside the program and supplied as %tr.<site>.  [draw] does that,
@@ -38,10 +47,16 @@ exception Score_error of string
 type options = {
   loss_to_go : bool;
       (* attribute to each site only the cost drawn at or after it *)
-  baseline : float;  (* control variate subtracted from every multiplier *)
+  baselines : (string * Ast.Types.expr) list;
+      (* control variate per site name, subtracted from that site's multiplier *)
 }
 
-let plain = { loss_to_go = false; baseline = 0.0 }
+let plain = { loss_to_go = false; baselines = [] }
+
+(* The same baseline for every site.  Sound only for an expression that reads no
+   draw at all -- a constant or a parameter; [lower] rejects anything else. *)
+let everywhere expression sites =
+  List.map (fun (site : Ast.Sites.site) -> (site.name, expression)) sites
 
 let lower ?(options = plain) (objective : Types.t) : Types.program =
   match objective with
@@ -110,11 +125,31 @@ let lower ?(options = plain) (objective : Types.t) : Types.program =
                cost_vars
             |> List.map var)
       in
+      (* A baseline for site i may read the draws made before i, and nothing
+         else; otherwise E[b grad log q_i | z_<i] stops being zero. *)
+      let check_baseline index expression =
+        List.iter
+          (fun name ->
+            if List.mem name traces && position name >= index then
+              raise
+                (Score_error
+                   (Printf.sprintf
+                      "the baseline for site '%s' reads '%s', which is drawn at \
+                       or after it"
+                      (List.nth traces index) name)))
+          (Transform.Assess_expr.free_vars expression)
+      in
       let contribution index =
         let density = var (density_var index) in
         let multiplier =
-          if options.baseline = 0.0 then multiplier index
-          else rank 0 Sub [ multiplier index; Lit.scalar options.baseline ]
+          match
+            List.assoc_opt
+              (List.nth sites index).Ast.Sites.name options.baselines
+          with
+          | None -> multiplier index
+          | Some baseline ->
+              check_baseline index baseline;
+              rank 0 Sub [ multiplier index; baseline ]
         in
         rank 0 Mul
           [

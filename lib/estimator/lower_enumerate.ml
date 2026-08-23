@@ -14,10 +14,13 @@
    later sites are conditioned on earlier draws is weighted correctly without
    this code ever looking at a distribution, only at the support sizes.
 
-   Each assignment gets its own copy of the body, so the program grows with the
-   product of the supports.  Beyond [max_assignments] the right answer is to
-   give the enumeration its own leading array axis the way Quadrature does, and
-   reduce along it, rather than to replicate. *)
+   Two forms produce the same sum.  [replicate] gives each assignment its own
+   copy of the body, so the program grows with the product of the supports;
+   [batched:true] instead binds each trace to the column of its coordinates and
+   lifts the body once to that axis, the way Quadrature does.  The replicating
+   form is the default and is kept as the reference: a test holds the two to
+   1e-12 on both value and gradient, which is what makes the batched form
+   trustworthy. *)
 
 open Ast.Types
 
@@ -56,7 +59,54 @@ let check_enumerable (site : Ast.Sites.site) =
          (Printf.sprintf "enumeration is over scalar sites; '%s' has a frame"
             site.name))
 
-let lower (objective : Types.t) : Types.program =
+(* One [K] tensor per site, holding that site's coordinate in each assignment. *)
+let coordinate_tensors ~count assignments position =
+  let tensor = View.Tensor.make [| count |] in
+  List.iteri
+    (fun index assignment ->
+      View.Buf.set tensor.buf index
+        (float_of_int (List.nth assignment position)))
+    assignments;
+  const tensor
+
+(* One program for every assignment at once: bind each trace to the column of
+   its coordinates, lift the body and the density to that axis, and reduce.
+   Same sum as [replicate], but the program no longer grows with the support. *)
+let batch ~traces ~body ~log_density assignments =
+  let count = List.length assignments in
+  let bindings =
+    List.mapi
+      (fun position trace ->
+        (trace, coordinate_tensors ~count assignments position))
+      traces
+  in
+  let lift e = Batch.lift ~size:count ~batched:traces e in
+  (* body already contains a copy of log q; one rename keeps the binders of the
+     second copy distinct.  One, not one per assignment. *)
+  let weight = prim Exp [ lift (Rename.binders ~tag:"b" log_density) ] in
+  Transform.Forward.wrap_let_bindings bindings
+    (prim (Sum_axis 0) [ prim Mul [ weight; lift body ] ])
+
+(* One copy of the body per assignment, weighted and summed. *)
+let replicate ~traces ~body ~log_density assignments =
+  let term index assignment =
+    let substitute e =
+      List.fold_left2
+        (fun e trace category ->
+          Transform.Assess_expr.subst ~from:trace
+            ~to_:(Lit.scalar (float_of_int category))
+            e)
+        e traces assignment
+    in
+    let tag = Printf.sprintf "e%d" index in
+    let weight =
+      prim Exp [ substitute log_density |> Rename.binders ~tag:(tag ^ "q") ]
+    in
+    rank 0 Mul [ weight; substitute body |> Rename.binders ~tag ]
+  in
+  Lit.sum (List.mapi term assignments)
+
+let lower ?(batched = false) (objective : Types.t) : Types.program =
   match objective with
   | Types.Deterministic loss -> { Types.loss; sites = []; noise = [] }
   | Types.Expect { sites; body; log_density; supports; env_shapes; _ } ->
@@ -66,31 +116,17 @@ let lower (objective : Types.t) : Types.program =
       List.iter check_enumerable sites;
       let counts = List.map (categories ~supports) sites in
       let total = List.fold_left ( * ) 1 counts in
-      if total > max_assignments then
+      if (not batched) && total > max_assignments then
         raise
           (Enumerate_error
              (Printf.sprintf
-                "%d assignments exceeds the replication limit of %d; this needs \
-                 an enumeration axis rather than replicated bodies"
+                "%d assignments exceeds the replication limit of %d; pass \
+                 ~batched:true to enumerate along an axis instead"
                 total max_assignments));
       let traces = List.map Ast.Sites.trace_name sites in
-      let term index assignment =
-        let substitute e =
-          List.fold_left2
-            (fun e trace category ->
-              Transform.Assess_expr.subst ~from:trace
-                ~to_:(Lit.scalar (float_of_int category))
-                e)
-            e traces assignment
-        in
-        let tag = Printf.sprintf "e%d" index in
-        let weight =
-          prim Exp [ substitute log_density |> Rename.binders ~tag:(tag ^ "q") ]
-        in
-        rank 0 Mul [ weight; substitute body |> Rename.binders ~tag ]
-      in
+      let build = if batched then batch else replicate in
       let loss =
-        Lit.sum (List.mapi term (assignments counts))
+        build ~traces ~body ~log_density (assignments counts)
         |> Transform.Expand_rank.expand ~senv:env_shapes
         |> Transform.Desugar.fuse_views
       in

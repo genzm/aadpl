@@ -53,7 +53,17 @@ The surrogate is `f + Σᵢ stopgrad(mᵢ − b)·(log qᵢ − stopgrad(log q�
 the program still **reports the objective** while differentiating like the estimator; a bare
 `f + stopgrad(f)·log q` would differentiate correctly and then report a number nobody asked for.
 `Lower_score.options` sets `mᵢ`: `loss_to_go` attributes to site *i* only the cost drawn at or after it
-(valid because `E[c·∇log qᵢ | z_<ᵢ] = 0` for earlier `c`), and `baseline` subtracts a constant control variate.
+(valid because `E[c·∇log qᵢ | z_<ᵢ] = 0` for earlier `c`), and `baselines` subtracts a per-site control
+variate. A baseline may be a constant, a parameter, or an expression in the draws made *before* its site —
+never one that reads its own site or a later one, which `lower_score` checks rather than assumes. Note that
+a baseline sits inside `stopgrad`, so `dL/db = 0`: fitting one is a separate objective, written by the caller.
+
+`lower_enumerate` comes in two forms. `replicate` (the default) gives each assignment its own copy of the
+body — simple, but the program grows with the product of the supports, so it refuses past `max_assignments`.
+`~batched:true` binds each trace to the column of its coordinates and lifts the body **once** to that axis
+via `Batch.lift`, which reuses `Expand_rank.shift_prim` — the batch axis *is* a frame axis, so there is no
+second implementation of the axis arithmetic. The replicating form is kept as the reference the batched one
+is checked against (value and every gradient, 1e-12), on the principle that keeps `Kernel.Naive` next to BLAS.
 
 `lower_enumerate` is the golden reference for `lower_score`: on a finite support, `Σ_z q(z)·grad_score(z)`
 must equal `grad_enumerate` exactly, so unbiasedness is a **deterministic** test rather than a statistical
